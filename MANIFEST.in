@@ -1,0 +1,9 @@
+include README.md
+include LICENSE
+recursive-include src *.py
+recursive-include lemon *.py
+recursive-exclude tests *
+recursive-exclude example *
+recursive-exclude debug *
+recursive-exclude bencmark *
+recursive-exclude kaggle *

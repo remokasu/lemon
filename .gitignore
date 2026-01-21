@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual Environment
+venv/
+env/
+ENV/
+ai/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/
+.tox/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Data files
+data/
+*.gz
+*.zip
+*.tar
+*.h5
+
+# Model checkpoints
+checkpoint_*.h5
+best_model.h5
+final_model.h5
+*.pth
+*.pkl
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+aaa.py
+debug.py
+test_temp.py
+
+# Benchmark results
+benchmark_results.png
+*.png
+*.jpg
+*.jpeg
+
+# Documentation build
+docs/_build/
+site/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Backup files
+*.bak
+*.orig
+
+*.jupyterlab-workspace
+
+outputs/
+debug/
+htmlcov/
+jupyter_config/
+data/
+benchmark/
+.ruff_cache
+docker-compose.yml
+Dockerfile
+
+.Trash-0/
+
+kaggle/
+.claude/
+bencmark/
+experiments/
+
+memo/
+TODO.md
+
+!src/lemon/nnlib/data/
