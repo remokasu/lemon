@@ -7,3 +7,5 @@ from lemon.nnlib.scheduler.reduce_on_plateau import (
     ReduceOnLossPlateau,
     ReduceOnMetricPlateau,
 )
+from lemon.nnlib.scheduler.exponential import ExponentialScheduler, ExponentialLR
+from lemon.nnlib.scheduler.linear import LinearScheduler, LinearLR

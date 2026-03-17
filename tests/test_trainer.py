@@ -84,7 +84,9 @@ def test_accuracy_metric():
     acc2 = metric(y_pred2, y_true2)
 
     expected_acc2 = (2 / 3) * 100.0
-    assert abs(acc2 - expected_acc2) < 1e-4, f"Accuracy should be {expected_acc2:.2f}%, got {acc2}"
+    assert abs(acc2 - expected_acc2) < 1e-4, (
+        f"Accuracy should be {expected_acc2:.2f}%, got {acc2}"
+    )
     print("  ✅ Accuracy partial")
 
     print("✅ All Accuracy metric tests passed!\n")

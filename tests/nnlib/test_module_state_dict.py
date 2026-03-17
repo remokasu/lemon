@@ -113,7 +113,9 @@ def test_named_modules_nested():
     """Test named_modules() with nested structure"""
     model = NestedModel()
 
-    module_info = [(name, module.__class__.__name__) for name, module in model.named_modules()]
+    module_info = [
+        (name, module.__class__.__name__) for name, module in model.named_modules()
+    ]
 
     # Check all modules
     module_names = [name for name, _ in module_info]
@@ -179,6 +181,7 @@ def test_load_state_dict_strict():
         model1.named_parameters(), model2.named_parameters()
     ):
         import numpy as np
+
         assert name1 == name2
         assert np.allclose(nm.as_numpy(param1.data), nm.as_numpy(param2.data))
 
@@ -188,7 +191,10 @@ def test_load_state_dict_non_strict():
     model = SimpleModel()
 
     # Create partial state_dict (missing some keys)
-    partial_state = {"fc1.weight": nm.as_numpy(nm.randn(10, 20)), "fc1.bias": nm.as_numpy(nm.zeros(20))}
+    partial_state = {
+        "fc1.weight": nm.as_numpy(nm.randn(10, 20)),
+        "fc1.bias": nm.as_numpy(nm.zeros(20)),
+    }
 
     # Should not raise error with strict=False
     model.load_state_dict(partial_state, strict=False)
@@ -244,6 +250,7 @@ def test_save_load_with_pickle():
         # Compare outputs
         y2 = model2(x)
         import numpy as np
+
         assert np.allclose(nm.as_numpy(y1), nm.as_numpy(y2))
 
     finally:
@@ -267,6 +274,7 @@ def test_transfer_learning_scenario():
 
     # Check fc1 parameters match
     import numpy as np
+
     for name, param in model2.named_parameters():
         if "fc1" in name:
             assert np.allclose(nm.as_numpy(param.data), pretrained_state[name])

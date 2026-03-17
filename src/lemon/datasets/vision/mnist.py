@@ -67,7 +67,9 @@ class MNIST(_MNISTLikeDataset):
             "t10k-labels-idx1-ubyte.gz",
         ]
 
-    def __init__(self, root="./data", train=True, download=False, transform=None, flatten=False):
+    def __init__(
+        self, root="./data", train=True, download=False, transform=None, flatten=False
+    ):
         self.root = root
         self.train = train
         self.transform = transform

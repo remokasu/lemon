@@ -23,7 +23,12 @@ from lemon.transforms import compose
 
 # Convenience imports for common transforms
 from lemon.transforms.compose import Compose, Lambda
-from lemon.transforms.vision import Normalize, ToTensor, RandomNoise, RandomHorizontalFlip
+from lemon.transforms.vision import (
+    Normalize,
+    ToTensor,
+    RandomNoise,
+    RandomHorizontalFlip,
+)
 
 __all__ = [
     "vision",

@@ -29,7 +29,9 @@ def _calculate_fan_in_and_fan_out(tensor):
     dimensions = len(tensor.shape)
 
     if dimensions < 2:
-        raise ValueError(f"Fan in and fan out cannot be computed for tensor with fewer than 2 dimensions. Got {dimensions}")
+        raise ValueError(
+            f"Fan in and fan out cannot be computed for tensor with fewer than 2 dimensions. Got {dimensions}"
+        )
 
     if dimensions == 2:
         # Linear layer: (fan_in, fan_out)
@@ -66,15 +68,15 @@ def _calculate_correct_fan(tensor, mode):
         Fan value
     """
     mode = mode.lower()
-    valid_modes = ['fan_in', 'fan_out', 'fan_avg']
+    valid_modes = ["fan_in", "fan_out", "fan_avg"]
     if mode not in valid_modes:
         raise ValueError(f"Mode {mode} not supported, please use one of {valid_modes}")
 
     fan_in, fan_out = _calculate_fan_in_and_fan_out(tensor)
 
-    if mode == 'fan_in':
+    if mode == "fan_in":
         return fan_in
-    elif mode == 'fan_out':
+    elif mode == "fan_out":
         return fan_out
     else:  # fan_avg
         return (fan_in + fan_out) / 2
@@ -96,22 +98,34 @@ def _calculate_gain(nonlinearity, param=None):
     float
         Gain value
     """
-    linear_fns = ['linear', 'conv1d', 'conv2d', 'conv3d', 'conv_transpose1d', 'conv_transpose2d', 'conv_transpose3d']
-    if nonlinearity in linear_fns or nonlinearity == 'sigmoid':
+    linear_fns = [
+        "linear",
+        "conv1d",
+        "conv2d",
+        "conv3d",
+        "conv_transpose1d",
+        "conv_transpose2d",
+        "conv_transpose3d",
+    ]
+    if nonlinearity in linear_fns or nonlinearity == "sigmoid":
         return 1
-    elif nonlinearity == 'tanh':
+    elif nonlinearity == "tanh":
         return 5.0 / 3
-    elif nonlinearity == 'relu':
+    elif nonlinearity == "relu":
         return math.sqrt(2.0)
-    elif nonlinearity == 'leaky_relu':
+    elif nonlinearity == "leaky_relu":
         if param is None:
             negative_slope = 0.01
-        elif not isinstance(param, bool) and isinstance(param, int) or isinstance(param, float):
+        elif (
+            not isinstance(param, bool)
+            and isinstance(param, int)
+            or isinstance(param, float)
+        ):
             negative_slope = param
         else:
             raise ValueError(f"negative_slope {param} not a valid number")
-        return math.sqrt(2.0 / (1 + negative_slope ** 2))
-    elif nonlinearity == 'selu':
+        return math.sqrt(2.0 / (1 + negative_slope**2))
+    elif nonlinearity == "selu":
         return 3.0 / 4
     else:
         raise ValueError(f"Unsupported nonlinearity {nonlinearity}")
@@ -121,7 +135,8 @@ def _calculate_gain(nonlinearity, param=None):
 # Kaiming (He) Initialization - for ReLU networks
 # ============================================================================
 
-def kaiming_uniform_(tensor, a=0, mode='fan_in', nonlinearity='relu'):
+
+def kaiming_uniform_(tensor, a=0, mode="fan_in", nonlinearity="relu"):
     """
     Kaiming uniform initialization (He initialization).
 
@@ -171,7 +186,7 @@ def kaiming_uniform_(tensor, a=0, mode='fan_in', nonlinearity='relu'):
     return tensor
 
 
-def kaiming_normal_(tensor, a=0, mode='fan_in', nonlinearity='relu'):
+def kaiming_normal_(tensor, a=0, mode="fan_in", nonlinearity="relu"):
     """
     Kaiming normal initialization (He initialization).
 
@@ -221,6 +236,7 @@ def kaiming_normal_(tensor, a=0, mode='fan_in', nonlinearity='relu'):
 # ============================================================================
 # Xavier (Glorot) Initialization - for Tanh/Sigmoid networks
 # ============================================================================
+
 
 def xavier_uniform_(tensor, gain=1.0):
     """
@@ -311,6 +327,7 @@ def xavier_normal_(tensor, gain=1.0):
 # ============================================================================
 # Basic initialization functions
 # ============================================================================
+
 
 def zeros_(tensor):
     """

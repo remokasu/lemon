@@ -373,8 +373,6 @@ class AutogradNamespace:
 autograd = AutogradNamespace()
 
 
-
-
 # ==============================
 # Operation Factory Functions
 # ==============================
@@ -383,9 +381,9 @@ autograd = AutogradNamespace()
 def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
     """
     二項演算のファクトリ関数
-    
+
     ボイラープレートを削減し、新しい演算の追加を容易にする。
-    
+
     Parameters
     ----------
     forward_fn : callable(x_data, y_data) -> ndarray
@@ -396,12 +394,12 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
         y の勾配計算
     save_data : bool, optional
         x._data, y._data を保存するか (デフォルト: True)
-    
+
     Returns
     -------
     callable
         二項演算関数
-    
+
     Examples
     --------
     >>> add = _make_binary_op(
@@ -410,6 +408,7 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
     ...     grad_y_fn=lambda g, x, y, r: g
     ... )
     """
+
     def binary_op(x, y):
         # 型変換
         if not isinstance(x, NumType):
@@ -460,7 +459,9 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
                     grad_data,
                     x_data if save_data else x._data,
                     y_data if save_data else y._data,
-                    result_data_saved if result_data_saved is not None else result._data
+                    result_data_saved
+                    if result_data_saved is not None
+                    else result._data,
                 )
                 grad_x = sum_to(_create_result(grad_x_raw), x_shape)
                 if x.grad is None:
@@ -473,7 +474,9 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
                     grad_data,
                     x_data if save_data else x._data,
                     y_data if save_data else y._data,
-                    result_data_saved if result_data_saved is not None else result._data
+                    result_data_saved
+                    if result_data_saved is not None
+                    else result._data,
                 )
                 grad_y = sum_to(_create_result(grad_y_raw), y_shape)
                 if y.grad is None:
@@ -518,6 +521,7 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
     ...     save_output=True
     ... )
     """
+
     def unary_op(x):
         if not isinstance(x, NumType):
             x = _auto_convert(x)
@@ -576,28 +580,28 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
 add = _make_binary_op(
     forward_fn=lambda x, y: x + y,
     grad_x_fn=lambda g, x, y, r: g,
-    grad_y_fn=lambda g, x, y, r: g
+    grad_y_fn=lambda g, x, y, r: g,
 )
 
 
 sub = _make_binary_op(
     forward_fn=lambda x, y: x - y,
     grad_x_fn=lambda g, x, y, r: g,
-    grad_y_fn=lambda g, x, y, r: -g
+    grad_y_fn=lambda g, x, y, r: -g,
 )
 
 
 mul = _make_binary_op(
     forward_fn=lambda x, y: x * y,
     grad_x_fn=lambda g, x, y, r: g * y,
-    grad_y_fn=lambda g, x, y, r: g * x
+    grad_y_fn=lambda g, x, y, r: g * x,
 )
 
 
 div = _make_binary_op(
     forward_fn=lambda x, y: x / y,
     grad_x_fn=lambda g, x, y, r: g / y,
-    grad_y_fn=lambda g, x, y, r: -g * x / (y * y)
+    grad_y_fn=lambda g, x, y, r: -g * x / (y * y),
 )
 
 
@@ -609,14 +613,14 @@ neg = _make_unary_op(
     forward_fn=lambda xp, x: -x,
     grad_fn=lambda g, x, r, xp: -g,
     save_input=False,
-    save_output=False
+    save_output=False,
 )
 
 absolute = _make_unary_op(
     forward_fn=lambda xp, x: xp.absolute(x),
     grad_fn=lambda g, x, r, xp: g * xp.sign(x),
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 # Alias for backward compatibility
@@ -626,7 +630,7 @@ sqrt = _make_unary_op(
     forward_fn=lambda xp, x: xp.sqrt(x),
     grad_fn=lambda g, x, r, xp: g / (2 * r),  # d sqrt(x)/dx = 1/(2*sqrt(x))
     save_input=False,
-    save_output=True
+    save_output=True,
 )
 
 
@@ -638,42 +642,42 @@ exp = _make_unary_op(
     forward_fn=lambda xp, x: xp.exp(x),
     grad_fn=lambda g, x, r, xp: g * r,  # d exp(x)/dx = exp(x) = r
     save_input=False,
-    save_output=True
+    save_output=True,
 )
 
 log = _make_unary_op(
     forward_fn=lambda xp, x: xp.log(x),
     grad_fn=lambda g, x, r, xp: g / x,  # d log(x)/dx = 1/x
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 expm1 = _make_unary_op(
     forward_fn=lambda xp, x: xp.expm1(x),
     grad_fn=lambda g, x, r, xp: g * xp.exp(x),  # d (exp(x)-1)/dx = exp(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 log1p = _make_unary_op(
     forward_fn=lambda xp, x: xp.log1p(x),
     grad_fn=lambda g, x, r, xp: g / (1 + x),  # d log(1+x)/dx = 1/(1+x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 log2 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log2(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(2)),  # d log2(x)/dx = 1/(x*ln(2))
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 log10 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log10(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(10)),  # d log10(x)/dx = 1/(x*ln(10))
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 
@@ -685,42 +689,43 @@ sin = _make_unary_op(
     forward_fn=lambda xp, x: xp.sin(x),
     grad_fn=lambda g, x, r, xp: g * xp.cos(x),  # d sin(x)/dx = cos(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 cos = _make_unary_op(
     forward_fn=lambda xp, x: xp.cos(x),
     grad_fn=lambda g, x, r, xp: -g * xp.sin(x),  # d cos(x)/dx = -sin(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 tan = _make_unary_op(
     forward_fn=lambda xp, x: xp.tan(x),
     grad_fn=lambda g, x, r, xp: g / (xp.cos(x) ** 2),  # d tan(x)/dx = 1/cos²(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 arcsin = _make_unary_op(
     forward_fn=lambda xp, x: xp.arcsin(x),
-    grad_fn=lambda g, x, r, xp: g / xp.sqrt(1 - x ** 2),  # d arcsin(x)/dx = 1/sqrt(1-x²)
+    grad_fn=lambda g, x, r, xp: g / xp.sqrt(1 - x**2),  # d arcsin(x)/dx = 1/sqrt(1-x²)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 arccos = _make_unary_op(
     forward_fn=lambda xp, x: xp.arccos(x),
-    grad_fn=lambda g, x, r, xp: -g / xp.sqrt(1 - x ** 2),  # d arccos(x)/dx = -1/sqrt(1-x²)
+    grad_fn=lambda g, x, r, xp: -g
+    / xp.sqrt(1 - x**2),  # d arccos(x)/dx = -1/sqrt(1-x²)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 arctan = _make_unary_op(
     forward_fn=lambda xp, x: xp.arctan(x),
-    grad_fn=lambda g, x, r, xp: g / (1 + x ** 2),  # d arctan(x)/dx = 1/(1+x²)
+    grad_fn=lambda g, x, r, xp: g / (1 + x**2),  # d arctan(x)/dx = 1/(1+x²)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 
@@ -732,48 +737,49 @@ sinh = _make_unary_op(
     forward_fn=lambda xp, x: xp.sinh(x),
     grad_fn=lambda g, x, r, xp: g * xp.cosh(x),  # d sinh(x)/dx = cosh(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 cosh = _make_unary_op(
     forward_fn=lambda xp, x: xp.cosh(x),
     grad_fn=lambda g, x, r, xp: g * xp.sinh(x),  # d cosh(x)/dx = sinh(x)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 tanh = _make_unary_op(
     forward_fn=lambda xp, x: xp.tanh(x),
     grad_fn=lambda g, x, r, xp: g * (1 - r * r),  # d tanh(x)/dx = 1 - tanh²(x)
     save_input=False,
-    save_output=True
+    save_output=True,
 )
 
 arcsinh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arcsinh(x),
-    grad_fn=lambda g, x, r, xp: g / xp.sqrt(x ** 2 + 1),  # d arcsinh(x)/dx = 1/sqrt(x²+1)
+    grad_fn=lambda g, x, r, xp: g / xp.sqrt(x**2 + 1),  # d arcsinh(x)/dx = 1/sqrt(x²+1)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 arccosh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arccosh(x),
-    grad_fn=lambda g, x, r, xp: g / xp.sqrt(x ** 2 - 1),  # d arccosh(x)/dx = 1/sqrt(x²-1)
+    grad_fn=lambda g, x, r, xp: g / xp.sqrt(x**2 - 1),  # d arccosh(x)/dx = 1/sqrt(x²-1)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 arctanh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arctanh(x),
-    grad_fn=lambda g, x, r, xp: g / (1 - x ** 2),  # d arctanh(x)/dx = 1/(1-x²)
+    grad_fn=lambda g, x, r, xp: g / (1 - x**2),  # d arctanh(x)/dx = 1/(1-x²)
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 
 # ------------------------------
 # 6. Comparison and Special Functions
 # ------------------------------
+
 
 # Helper functions for maximum
 def _maximum_grad_x(g, x, y, r):
@@ -784,6 +790,7 @@ def _maximum_grad_x(g, x, y, r):
     mask[x == y] = 0.5
     return g * mask
 
+
 def _maximum_grad_y(g, x, y, r):
     """Gradient for maximum w.r.t. y: y > x: 1.0, y == x: 0.5, y < x: 0.0"""
     xp = get_array_module(y)
@@ -792,11 +799,12 @@ def _maximum_grad_y(g, x, y, r):
     mask[y == x] = 0.5
     return g * mask
 
+
 maximum = _make_binary_op(
     forward_fn=lambda x, y: get_array_module(x).maximum(x, y),
     grad_x_fn=_maximum_grad_x,
     grad_y_fn=_maximum_grad_y,
-    save_data=True
+    save_data=True,
 )
 
 
@@ -809,6 +817,7 @@ def _minimum_grad_x(g, x, y, r):
     mask[x == y] = 0.5
     return g * mask
 
+
 def _minimum_grad_y(g, x, y, r):
     """Gradient for minimum w.r.t. y: y < x: 1.0, y == x: 0.5, y > x: 0.0"""
     xp = get_array_module(y)
@@ -817,44 +826,47 @@ def _minimum_grad_y(g, x, y, r):
     mask[y == x] = 0.5
     return g * mask
 
+
 minimum = _make_binary_op(
     forward_fn=lambda x, y: get_array_module(x).minimum(x, y),
     grad_x_fn=_minimum_grad_x,
     grad_y_fn=_minimum_grad_y,
-    save_data=True
+    save_data=True,
 )
 
 
 # Special math functions
 square = _make_unary_op(
-    forward_fn=lambda xp, x: x ** 2,
+    forward_fn=lambda xp, x: x**2,
     grad_fn=lambda g, x, r, xp: g * 2 * x,  # d x²/dx = 2x
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 reciprocal = _make_unary_op(
     forward_fn=lambda xp, x: 1.0 / x,
-    grad_fn=lambda g, x, r, xp: -g / (x ** 2),  # d (1/x)/dx = -1/x²
+    grad_fn=lambda g, x, r, xp: -g / (x**2),  # d (1/x)/dx = -1/x²
     save_input=True,
-    save_output=False
+    save_output=False,
 )
 
 
 # Helper functions for atan2
 def _atan2_grad_y(g, y, x, r):
     """Gradient for atan2 w.r.t. y: d atan2(y,x)/dy = x/(x²+y²)"""
-    return g * x / (x ** 2 + y ** 2)
+    return g * x / (x**2 + y**2)
+
 
 def _atan2_grad_x(g, y, x, r):
     """Gradient for atan2 w.r.t. x: d atan2(y,x)/dx = -y/(x²+y²)"""
-    return g * (-y) / (x ** 2 + y ** 2)
+    return g * (-y) / (x**2 + y**2)
+
 
 atan2 = _make_binary_op(
     forward_fn=lambda y, x: get_array_module(y).arctan2(y, x),
     grad_x_fn=_atan2_grad_y,  # Note: x in _make_binary_op corresponds to first arg (y)
     grad_y_fn=_atan2_grad_x,  # Note: y in _make_binary_op corresponds to second arg (x)
-    save_data=True
+    save_data=True,
 )
 
 
@@ -5060,25 +5072,28 @@ def concatenate(tensors, axis=0) -> Tensor:
         Concatenated tensor
     """
     # Convert to NumType if needed
-    tensors = [_auto_convert(t, requires_grad=False) if not isinstance(t, NumType) else t for t in tensors]
-    
+    tensors = [
+        _auto_convert(t, requires_grad=False) if not isinstance(t, NumType) else t
+        for t in tensors
+    ]
+
     arrays = [t._data for t in tensors]
     xp = get_array_module(arrays[0])
     result_data = xp.concatenate(arrays, axis=axis)
     result = Tensor(result_data)
-    
+
     # Check if any input requires grad
     requires_grads = [t.requires_grad for t in tensors]
     if not (autograd.is_enabled() and any(requires_grads)):
         result.requires_grad = False
         return result
-    
+
     result.requires_grad = True
     result._prev = tuple(t for t in tensors if t.requires_grad)
-    
+
     # Save info for backward
     axis_normalized = axis if axis >= 0 else len(result_data.shape) + axis
-    
+
     def _backward():
         grad_data = result.grad._data
         split_indices = []
@@ -5087,9 +5102,9 @@ def concatenate(tensors, axis=0) -> Tensor:
             offset += t._data.shape[axis_normalized]
             split_indices.append(offset)
         split_indices = split_indices[:-1]  # Remove last index
-        
+
         grad_splits = xp.split(grad_data, split_indices, axis=axis_normalized)
-        
+
         for t, grad_split in zip(tensors, grad_splits):
             if t.requires_grad:
                 grad_t = _create_result(grad_split)
@@ -5097,10 +5112,9 @@ def concatenate(tensors, axis=0) -> Tensor:
                     t.grad = grad_t
                 else:
                     t.grad._data = t.grad._data + grad_t._data
-    
+
     result._backward = _backward
     return result
-
 
 
 def stack(tensors, axis=0) -> Tensor:
@@ -5120,30 +5134,33 @@ def stack(tensors, axis=0) -> Tensor:
         Stacked tensor
     """
     # Convert to NumType if needed
-    tensors = [_auto_convert(t, requires_grad=False) if not isinstance(t, NumType) else t for t in tensors]
-    
+    tensors = [
+        _auto_convert(t, requires_grad=False) if not isinstance(t, NumType) else t
+        for t in tensors
+    ]
+
     arrays = [t._data for t in tensors]
     xp = get_array_module(arrays[0])
     result_data = xp.stack(arrays, axis=axis)
     result = Tensor(result_data)
-    
+
     # Check if any input requires grad
     requires_grads = [t.requires_grad for t in tensors]
     if not (autograd.is_enabled() and any(requires_grads)):
         result.requires_grad = False
         return result
-    
+
     result.requires_grad = True
     result._prev = tuple(t for t in tensors if t.requires_grad)
-    
+
     # Save info for backward
     axis_normalized = axis if axis >= 0 else len(result_data.shape) + axis + 1
-    
+
     def _backward():
         grad_data = result.grad._data
         # unstack along the stacked axis
         grad_unstacked = xp.split(grad_data, len(tensors), axis=axis_normalized)
-        
+
         for t, grad_slice in zip(tensors, grad_unstacked):
             if t.requires_grad:
                 # Remove the stacked dimension by squeezing
@@ -5153,10 +5170,9 @@ def stack(tensors, axis=0) -> Tensor:
                     t.grad = grad_t
                 else:
                     t.grad._data = t.grad._data + grad_t._data
-    
+
     result._backward = _backward
     return result
-
 
 
 def bmm(a, b) -> Tensor:

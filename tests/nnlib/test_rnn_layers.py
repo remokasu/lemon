@@ -150,7 +150,9 @@ def test_lstm_numerical_gradient():
         ana_g = analytical_grad[idx]
         diff = abs(num_g - ana_g)
         max_diff = max(max_diff, diff)
-        print(f"  Position {idx}: numerical={num_g:.6f}, analytical={ana_g:.6f}, diff={diff:.6e}")
+        print(
+            f"  Position {idx}: numerical={num_g:.6f}, analytical={ana_g:.6f}, diff={diff:.6e}"
+        )
 
     print(f"\nMax gradient difference: {max_diff:.6e}")
 
@@ -158,7 +160,9 @@ def test_lstm_numerical_gradient():
     relative_error = max_diff / (abs(numerical_grad).max() + 1e-8)
     print(f"Relative error: {relative_error:.6e}")
 
-    assert relative_error < 1e-2, f"Gradient check failed: relative_error={relative_error}"
+    assert relative_error < 1e-2, (
+        f"Gradient check failed: relative_error={relative_error}"
+    )
 
     print("\n✓ Test 2 passed\n")
 
@@ -238,7 +242,7 @@ def test_rnn_basic():
     nm.autograd.enable()
 
     # RNN
-    rnn = nl.RNN(input_size=4, hidden_size=6, num_layers=1, nonlinearity='tanh')
+    rnn = nl.RNN(input_size=4, hidden_size=6, num_layers=1, nonlinearity="tanh")
     x = nm.randn(3, 2, 4, requires_grad=True)
 
     print(f"\nInput shape: {x.shape}")
@@ -322,7 +326,9 @@ def test_lstm_sequence_learning():
     print(f"Improvement:  {((initial_loss - final_loss) / initial_loss * 100):.1f}%")
 
     # Check that loss decreased significantly
-    assert final_loss < initial_loss * 0.5, "LSTM failed to learn (loss didn't decrease enough)"
+    assert final_loss < initial_loss * 0.5, (
+        "LSTM failed to learn (loss didn't decrease enough)"
+    )
 
     print("\n✓ Test 6 passed\n")
 
@@ -380,5 +386,6 @@ if __name__ == "__main__":
         print(f"Test failed: {e}")
         print("=" * 70)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

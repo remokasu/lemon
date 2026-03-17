@@ -89,7 +89,9 @@ class Module:
         for param in self.parameters():
             param.zero_grad()
 
-    def named_parameters(self, prefix: str = '', recurse: bool = True) -> Iterator[Tuple[str, Parameter]]:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True
+    ) -> Iterator[Tuple[str, Parameter]]:
         """
         名前付きパラメータを返す（再帰的）
 
@@ -128,9 +130,13 @@ class Module:
         if recurse:
             for name, module in self._modules.items():
                 submodule_prefix = f"{prefix}.{name}" if prefix else name
-                yield from module.named_parameters(prefix=submodule_prefix, recurse=True)
+                yield from module.named_parameters(
+                    prefix=submodule_prefix, recurse=True
+                )
 
-    def named_modules(self, memo: Optional[set] = None, prefix: str = '') -> Iterator[Tuple[str, 'Module']]:
+    def named_modules(
+        self, memo: Optional[set] = None, prefix: str = ""
+    ) -> Iterator[Tuple[str, "Module"]]:
         """
         名前付きモジュールを返す（再帰的）
 
@@ -172,7 +178,9 @@ class Module:
                 submodule_prefix = f"{prefix}.{name}" if prefix else name
                 yield from module.named_modules(memo, submodule_prefix)
 
-    def state_dict(self, destination: Optional[Dict[str, Any]] = None, prefix: str = '') -> Dict[str, Any]:
+    def state_dict(
+        self, destination: Optional[Dict[str, Any]] = None, prefix: str = ""
+    ) -> Dict[str, Any]:
         """
         モジュールの状態を辞書形式で返す
 

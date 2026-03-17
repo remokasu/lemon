@@ -49,9 +49,7 @@ class CIFAR10(_DownloadableDataset):
     @property
     def urls(self):
         """CIFAR-10 download URL"""
-        return [
-            {"cifar10": "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"}
-        ]
+        return [{"cifar10": "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"}]
 
     @property
     def filenames(self):

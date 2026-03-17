@@ -99,8 +99,8 @@ class LSTMCell(Module):
 
             # 忘却ゲートのバイアスを1.0に初期化（勾配消失を防ぐ）
             # bias_ih[hidden_size:2*hidden_size] が忘却ゲートのバイアス
-            self.bias_ih.data._data[self.hidden_size:2*self.hidden_size] = 1.0
-            self.bias_hh.data._data[self.hidden_size:2*self.hidden_size] = 1.0
+            self.bias_ih.data._data[self.hidden_size : 2 * self.hidden_size] = 1.0
+            self.bias_hh.data._data[self.hidden_size : 2 * self.hidden_size] = 1.0
 
     def forward(self, x, hx=None):
         """
@@ -139,15 +139,15 @@ class LSTMCell(Module):
         # gates[:, h:2h] = forget gate
         # gates[:, 2h:3h] = cell gate
         # gates[:, 3h:4h] = output gate
-        i = gates[:, 0:self.hidden_size]
-        f = gates[:, self.hidden_size:2*self.hidden_size]
-        g = gates[:, 2*self.hidden_size:3*self.hidden_size]
-        o = gates[:, 3*self.hidden_size:4*self.hidden_size]
+        i = gates[:, 0 : self.hidden_size]
+        f = gates[:, self.hidden_size : 2 * self.hidden_size]
+        g = gates[:, 2 * self.hidden_size : 3 * self.hidden_size]
+        o = gates[:, 3 * self.hidden_size : 4 * self.hidden_size]
 
         # 活性化関数を適用
         i = 1 / (1 + nm.exp(-i))  # sigmoid(i)
         f = 1 / (1 + nm.exp(-f))  # sigmoid(f)
-        g = nm.tanh(g)             # tanh(g)
+        g = nm.tanh(g)  # tanh(g)
         o = 1 / (1 + nm.exp(-o))  # sigmoid(o)
 
         # セル状態と隠れ状態を更新

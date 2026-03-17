@@ -230,7 +230,9 @@ def load_checkpoint(
 
     # Restore scheduler state if provided
     # Support both old format (scheduler_state) and new format (schedulers_state)
-    schedulers_state_key = "schedulers_state" if "schedulers_state" in checkpoint else "scheduler_state"
+    schedulers_state_key = (
+        "schedulers_state" if "schedulers_state" in checkpoint else "scheduler_state"
+    )
     schedulers_state_data = checkpoint.get(schedulers_state_key)
 
     if schedulers_state_data is not None and schedulers is not None:
@@ -239,7 +241,9 @@ def load_checkpoint(
             schedulers_state_data = [schedulers_state_data]
 
         # Restore each scheduler
-        for i, (target_sched, sched_state) in enumerate(zip(schedulers, schedulers_state_data)):
+        for i, (target_sched, sched_state) in enumerate(
+            zip(schedulers, schedulers_state_data)
+        ):
             if target_sched is None:
                 continue
 

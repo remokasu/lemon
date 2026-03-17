@@ -100,8 +100,17 @@ class LSTM(Module):
     dropoutは最後のレイヤーには適用されない。
     """
 
-    def __init__(self, input_size, hidden_size, num_layers=1, bias=True,
-                 batch_first=False, dropout=0.0, bidirectional=False, return_sequences=True):
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        num_layers=1,
+        bias=True,
+        batch_first=False,
+        dropout=0.0,
+        bidirectional=False,
+        return_sequences=True,
+    ):
         super().__init__()
 
         self.input_size = input_size
@@ -117,18 +126,22 @@ class LSTM(Module):
         # 各レイヤーのLSTMCellを作成
         self.cells_forward = []
         for layer in range(num_layers):
-            layer_input_size = input_size if layer == 0 else hidden_size * self.num_directions
+            layer_input_size = (
+                input_size if layer == 0 else hidden_size * self.num_directions
+            )
             cell = LSTMCell(layer_input_size, hidden_size, bias)
-            setattr(self, f'cell_forward_{layer}', cell)
+            setattr(self, f"cell_forward_{layer}", cell)
             self.cells_forward.append(cell)
 
         # 双方向の場合、逆方向のセルも作成
         if bidirectional:
             self.cells_backward = []
             for layer in range(num_layers):
-                layer_input_size = input_size if layer == 0 else hidden_size * self.num_directions
+                layer_input_size = (
+                    input_size if layer == 0 else hidden_size * self.num_directions
+                )
                 cell = LSTMCell(layer_input_size, hidden_size, bias)
-                setattr(self, f'cell_backward_{layer}', cell)
+                setattr(self, f"cell_backward_{layer}", cell)
                 self.cells_backward.append(cell)
 
     def forward(self, x, hx=None):
@@ -166,8 +179,12 @@ class LSTM(Module):
 
         # 隠れ状態の初期化
         if hx is None:
-            h_0 = nm.zeros(self.num_layers * self.num_directions, batch_size, self.hidden_size)
-            c_0 = nm.zeros(self.num_layers * self.num_directions, batch_size, self.hidden_size)
+            h_0 = nm.zeros(
+                self.num_layers * self.num_directions, batch_size, self.hidden_size
+            )
+            c_0 = nm.zeros(
+                self.num_layers * self.num_directions, batch_size, self.hidden_size
+            )
         else:
             h_0, c_0 = hx
 
@@ -188,7 +205,9 @@ class LSTM(Module):
                 )
                 outputs_forward.append(h_forward)
 
-            output_forward = nm.stack(outputs_forward, axis=0)  # (seq_len, batch, hidden_size)
+            output_forward = nm.stack(
+                outputs_forward, axis=0
+            )  # (seq_len, batch, hidden_size)
 
             # 双方向の場合、逆方向も処理
             if self.bidirectional:
@@ -221,7 +240,9 @@ class LSTM(Module):
                 # 各タイムステップにドロップアウトを適用
                 layer_output_list = []
                 for t in range(seq_len):
-                    output_t = dropout(layer_output[t], p=self.dropout_p, training=train.is_on())
+                    output_t = dropout(
+                        layer_output[t], p=self.dropout_p, training=train.is_on()
+                    )
                     layer_output_list.append(output_t)
                 layer_output = nm.stack(layer_output_list, axis=0)
 
@@ -249,6 +270,8 @@ class LSTM(Module):
         return output, (h_n, c_n)
 
     def __repr__(self):
-        return (f"LSTM({self.input_size}, {self.hidden_size}, num_layers={self.num_layers}, "
-                f"batch_first={self.batch_first}, dropout={self.dropout_p}, "
-                f"bidirectional={self.bidirectional})")
+        return (
+            f"LSTM({self.input_size}, {self.hidden_size}, num_layers={self.num_layers}, "
+            f"batch_first={self.batch_first}, dropout={self.dropout_p}, "
+            f"bidirectional={self.bidirectional})"
+        )

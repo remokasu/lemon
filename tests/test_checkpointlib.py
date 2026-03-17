@@ -239,7 +239,9 @@ def test_checkpoint_with_scheduler():
         assert abs(optimizer2.lr - 0.1) < 1e-6, "Initial lr should be 0.1"
 
         # Load checkpoint
-        load_checkpoint(checkpoint_path, model2, optimizer2, schedulers=[scheduler2], verbose=False)
+        load_checkpoint(
+            checkpoint_path, model2, optimizer2, schedulers=[scheduler2], verbose=False
+        )
 
         # After loading, lr should be restored to 0.05
         assert abs(optimizer2.lr - 0.05) < 1e-6, "LR should be restored to 0.05"

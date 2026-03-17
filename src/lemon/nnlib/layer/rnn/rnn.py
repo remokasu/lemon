@@ -64,8 +64,18 @@ class RNN(Module):
     長い系列（> 10-20ステップ）を扱う場合は、LSTMやGRUの使用を推奨。
     """
 
-    def __init__(self, input_size, hidden_size, num_layers=1, nonlinearity='tanh',
-                 bias=True, batch_first=False, dropout=0.0, bidirectional=False, return_sequences=True):
+    def __init__(
+        self,
+        input_size,
+        hidden_size,
+        num_layers=1,
+        nonlinearity="tanh",
+        bias=True,
+        batch_first=False,
+        dropout=0.0,
+        bidirectional=False,
+        return_sequences=True,
+    ):
         super().__init__()
 
         self.input_size = input_size
@@ -82,18 +92,22 @@ class RNN(Module):
         # 各レイヤーのRNNCellを作成
         self.cells_forward = []
         for layer in range(num_layers):
-            layer_input_size = input_size if layer == 0 else hidden_size * self.num_directions
+            layer_input_size = (
+                input_size if layer == 0 else hidden_size * self.num_directions
+            )
             cell = RNNCell(layer_input_size, hidden_size, bias, nonlinearity)
-            setattr(self, f'cell_forward_{layer}', cell)
+            setattr(self, f"cell_forward_{layer}", cell)
             self.cells_forward.append(cell)
 
         # 双方向の場合、逆方向のセルも作成
         if bidirectional:
             self.cells_backward = []
             for layer in range(num_layers):
-                layer_input_size = input_size if layer == 0 else hidden_size * self.num_directions
+                layer_input_size = (
+                    input_size if layer == 0 else hidden_size * self.num_directions
+                )
                 cell = RNNCell(layer_input_size, hidden_size, bias, nonlinearity)
-                setattr(self, f'cell_backward_{layer}', cell)
+                setattr(self, f"cell_backward_{layer}", cell)
                 self.cells_backward.append(cell)
 
     def forward(self, x, h=None):
@@ -127,7 +141,9 @@ class RNN(Module):
 
         # 隠れ状態の初期化
         if h is None:
-            h_0 = nm.zeros(self.num_layers * self.num_directions, batch_size, self.hidden_size)
+            h_0 = nm.zeros(
+                self.num_layers * self.num_directions, batch_size, self.hidden_size
+            )
         else:
             h_0 = h
 
@@ -164,14 +180,18 @@ class RNN(Module):
                     else:
                         # 前の層の同じタイムステップの出力を使う
                         prev_forward = output_forward[t, :, :]
-                        prev_backward = layer_outputs_backward[layer-1][-1]
+                        prev_backward = layer_outputs_backward[layer - 1][-1]
                         x_t = nm.concatenate([prev_forward, prev_backward], axis=1)
 
-                    h_backward[layer] = self.cells_backward[layer](x_t, h_backward[layer])
+                    h_backward[layer] = self.cells_backward[layer](
+                        x_t, h_backward[layer]
+                    )
                     output_t = h_backward[layer]
 
                     if layer < self.num_layers - 1 and self.dropout_p > 0:
-                        output_t = dropout(output_t, p=self.dropout_p, training=train.is_on())
+                        output_t = dropout(
+                            output_t, p=self.dropout_p, training=train.is_on()
+                        )
 
                     layer_outputs_backward[layer].append(output_t)
 
@@ -202,6 +222,8 @@ class RNN(Module):
         return output, h_n
 
     def __repr__(self):
-        return (f"RNN({self.input_size}, {self.hidden_size}, num_layers={self.num_layers}, "
-                f"nonlinearity='{self.nonlinearity}', batch_first={self.batch_first}, "
-                f"dropout={self.dropout_p}, bidirectional={self.bidirectional})")
+        return (
+            f"RNN({self.input_size}, {self.hidden_size}, num_layers={self.num_layers}, "
+            f"nonlinearity='{self.nonlinearity}', batch_first={self.batch_first}, "
+            f"dropout={self.dropout_p}, bidirectional={self.bidirectional})"
+        )

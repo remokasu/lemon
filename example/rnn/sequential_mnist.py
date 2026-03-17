@@ -18,8 +18,12 @@ def reshape_to_sequence(x):
     return x.reshape(28, 28)
 
 
-train_dataset = lm.datasets.MNIST(root="./data", train=True, download=True, transform=reshape_to_sequence)
-test_dataset = lm.datasets.MNIST(root="./data", train=False, transform=reshape_to_sequence)
+train_dataset = lm.datasets.MNIST(
+    root="./data", train=True, download=True, transform=reshape_to_sequence
+)
+test_dataset = lm.datasets.MNIST(
+    root="./data", train=False, transform=reshape_to_sequence
+)
 
 # サンプル数を制限 (高速化のため)
 train_set = lm.Subset(train_dataset, list(range(1000)))
@@ -28,9 +32,15 @@ test_set = lm.Subset(test_dataset, list(range(200)))
 
 # Model: LSTM(28, 128) -> Linear(128, 10)
 model = lm.Sequential(
-    lm.LSTM(input_size=28, hidden_size=128, num_layers=2, dropout=0.2,
-            batch_first=True, return_sequences=False),
-    lm.Linear(128, 10)
+    lm.LSTM(
+        input_size=28,
+        hidden_size=128,
+        num_layers=2,
+        dropout=0.2,
+        batch_first=True,
+        return_sequences=False,
+    ),
+    lm.Linear(128, 10),
 )
 
 # Training / 訓練

@@ -65,15 +65,17 @@ class RNNCell(Module):
     LSTMやGRUの使用を推奨。
     """
 
-    def __init__(self, input_size, hidden_size, bias=True, nonlinearity='tanh'):
+    def __init__(self, input_size, hidden_size, bias=True, nonlinearity="tanh"):
         super().__init__()
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.use_bias = bias
         self.nonlinearity = nonlinearity
 
-        if nonlinearity not in ['tanh', 'relu']:
-            raise ValueError(f"nonlinearity must be 'tanh' or 'relu', got '{nonlinearity}'")
+        if nonlinearity not in ["tanh", "relu"]:
+            raise ValueError(
+                f"nonlinearity must be 'tanh' or 'relu', got '{nonlinearity}'"
+            )
 
         # 重み行列
         self.weight_ih = Parameter(nm.zeros(input_size, hidden_size))
@@ -128,7 +130,7 @@ class RNNCell(Module):
             output = output + self.bias_ih.data + self.bias_hh.data
 
         # 活性化関数を適用
-        if self.nonlinearity == 'tanh':
+        if self.nonlinearity == "tanh":
             h_next = nm.tanh(output)
         else:  # relu
             h_next = nm.maximum(0, output)

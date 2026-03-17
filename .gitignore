@@ -107,3 +107,6 @@ memo/
 TODO.md
 
 !src/lemon/nnlib/data/
+
+.claude/
+config/

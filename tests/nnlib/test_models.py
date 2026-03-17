@@ -4,8 +4,10 @@ RNNモデルの基本的な動作確認テスト
 
 Note: VGG/ResNetはexample/に移動したため、ここではテストしない
 """
+
 import sys
-sys.path.insert(0, 'src')
+
+sys.path.insert(0, "src")
 
 import lemon.numlib as nm
 import lemon.nnlib as nl
@@ -16,14 +18,14 @@ def test_rnn_import():
     print("Testing RNN imports...")
 
     # Cell
-    assert hasattr(nl, 'RNNCell')
-    assert hasattr(nl, 'LSTMCell')
-    assert hasattr(nl, 'GRUCell')
+    assert hasattr(nl, "RNNCell")
+    assert hasattr(nl, "LSTMCell")
+    assert hasattr(nl, "GRUCell")
 
     # Multi-layer
-    assert hasattr(nl, 'RNN')
-    assert hasattr(nl, 'LSTM')
-    assert hasattr(nl, 'GRU')
+    assert hasattr(nl, "RNN")
+    assert hasattr(nl, "LSTM")
+    assert hasattr(nl, "GRU")
 
     print("✓ RNN imports OK")
 
@@ -62,7 +64,7 @@ def test_lstm_parameters():
     print("✓ LSTM parameter access OK")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print("=" * 50)
     print("RNN Models Test Suite")
     print("=" * 50)
@@ -84,5 +86,6 @@ if __name__ == '__main__':
         print(f"Test failed: {e}")
         print("=" * 50)
         import traceback
+
         traceback.print_exc()
         sys.exit(1)

@@ -564,6 +564,141 @@ def test_scheduler_with_optimizer():
     print("✅ All scheduler-optimizer integration tests passed!\n")
 
 
+def test_exponential_scheduler():
+    """Test ExponentialScheduler and ExponentialLR"""
+    print("Testing ExponentialScheduler...")
+
+    nm.autograd.enable()
+
+    model = nl.Sequential(nl.Linear(10, 5))
+
+    # Test 1: Basic ExponentialScheduler
+    optimizer = nl.Adam(model.parameters(), lr=0.1)
+    scheduler = nl.ExponentialScheduler(optimizer, param_name="lr", gamma=0.9)
+
+    assert abs(optimizer.lr - 0.1) < 1e-9, "Initial lr should be 0.1"
+
+    # Epoch 1: last_epoch=0 -> lr = 0.1 * 0.9^0 = 0.1
+    scheduler.step()
+    assert abs(optimizer.lr - 0.1) < 1e-9, "Epoch 1: lr should be 0.1"
+
+    # Epoch 2: last_epoch=1 -> lr = 0.1 * 0.9^1 = 0.09
+    scheduler.step()
+    assert abs(optimizer.lr - 0.09) < 1e-9, "Epoch 2: lr should be 0.09"
+
+    # Epoch 3: last_epoch=2 -> lr = 0.1 * 0.9^2 = 0.081
+    scheduler.step()
+    assert abs(optimizer.lr - 0.081) < 1e-9, "Epoch 3: lr should be 0.081"
+
+    print("  ✅ Basic ExponentialScheduler")
+
+    # Test 2: ExponentialLR convenience class
+    optimizer = nl.Adam(model.parameters(), lr=0.01)
+    scheduler = nl.ExponentialLR(optimizer, gamma=0.5)
+
+    scheduler.step()
+    assert abs(optimizer.lr - 0.01) < 1e-9, "Epoch 1: lr should be 0.01"
+    scheduler.step()
+    assert abs(optimizer.lr - 0.005) < 1e-9, "Epoch 2: lr should be 0.005"
+    scheduler.step()
+    assert abs(optimizer.lr - 0.0025) < 1e-9, "Epoch 3: lr should be 0.0025"
+
+    print("  ✅ ExponentialLR convenience class")
+
+    # Test 3: ExponentialScheduler for momentum
+    optimizer = nl.SGD(model.parameters(), lr=0.01, momentum=0.9)
+    scheduler = nl.ExponentialScheduler(optimizer, param_name="momentum", gamma=0.95)
+
+    scheduler.step()
+    assert abs(optimizer.momentum - 0.9) < 1e-9, "Epoch 1: momentum should be 0.9"
+    scheduler.step()
+    assert abs(optimizer.momentum - 0.9 * 0.95) < 1e-9, "Epoch 2: momentum should decay"
+
+    print("  ✅ ExponentialScheduler for momentum")
+
+    # Test 4: repr
+    assert "ExponentialScheduler" in repr(
+        nl.ExponentialScheduler(optimizer, param_name="lr", gamma=0.9)
+    )
+    assert "ExponentialLR" in repr(nl.ExponentialLR(optimizer, gamma=0.9))
+
+    print("  ✅ ExponentialScheduler repr")
+
+    print("✅ All ExponentialScheduler tests passed!\n")
+
+
+def test_linear_scheduler():
+    """Test LinearScheduler and LinearLR"""
+    print("Testing LinearScheduler...")
+
+    nm.autograd.enable()
+
+    model = nl.Sequential(nl.Linear(10, 5))
+
+    # Test 1: Basic LinearLR (warmup: 0.1 -> 1.0 over 10 epochs)
+    optimizer = nl.Adam(model.parameters(), lr=0.01)
+    scheduler = nl.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=10)
+
+    # Epoch 1: last_epoch=0 -> factor = 0.1 + (1.0-0.1)*0/10 = 0.1 -> lr = 0.001
+    scheduler.step()
+    assert abs(optimizer.lr - 0.001) < 1e-9, "Epoch 1: lr should be 0.001"
+
+    # Epoch 6: last_epoch=5 -> factor = 0.1 + 0.9*5/10 = 0.55 -> lr = 0.0055
+    for _ in range(5):
+        scheduler.step()
+    assert abs(optimizer.lr - 0.0055) < 1e-9, "Epoch 6: lr should be 0.0055"
+
+    # After total_iters: last_epoch=10 -> lr = base_lr * end_factor = 0.01
+    for _ in range(5):
+        scheduler.step()
+    assert abs(optimizer.lr - 0.01) < 1e-9, "After total_iters: lr should be 0.01"
+
+    # Beyond total_iters: lr stays at end_factor
+    scheduler.step()
+    assert abs(optimizer.lr - 0.01) < 1e-9, "Beyond total_iters: lr should stay at 0.01"
+
+    print("  ✅ Basic LinearLR (warmup)")
+
+    # Test 2: LinearScheduler generic
+    optimizer = nl.Adam(model.parameters(), lr=0.1)
+    scheduler = nl.LinearScheduler(
+        optimizer, param_name="lr", start_factor=1.0, end_factor=0.1, total_iters=5
+    )
+
+    scheduler.step()
+    assert abs(optimizer.lr - 0.1) < 1e-9, "Epoch 1: lr should be 0.1"
+    for _ in range(4):
+        scheduler.step()
+    # last_epoch=5 >= total_iters -> end_factor
+    scheduler.step()
+    assert abs(optimizer.lr - 0.01) < 1e-9, "After total_iters: lr should be 0.01"
+
+    print("  ✅ LinearScheduler decay")
+
+    # Test 3: invalid start_factor
+    try:
+        nl.LinearLR(optimizer, start_factor=0.0, end_factor=1.0, total_iters=5)
+        assert False, "Should raise ValueError"
+    except ValueError as e:
+        assert "start_factor" in str(e)
+
+    try:
+        nl.LinearLR(optimizer, start_factor=1.5, end_factor=1.0, total_iters=5)
+        assert False, "Should raise ValueError"
+    except ValueError as e:
+        assert "start_factor" in str(e)
+
+    print("  ✅ Invalid start_factor detection")
+
+    # Test 4: repr
+    scheduler = nl.LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=5)
+    assert "LinearLR" in repr(scheduler)
+
+    print("  ✅ LinearLR repr")
+
+    print("✅ All LinearScheduler tests passed!\n")
+
+
 def run_all_tests():
     """Run all scheduler tests"""
     print("\n" + "=" * 70)
@@ -578,6 +713,8 @@ def run_all_tests():
         test_multiple_schedulers()
         test_scheduler_edge_cases()
         test_scheduler_with_optimizer()
+        test_exponential_scheduler()
+        test_linear_scheduler()
 
         print("=" * 70)
         print("✅ ALL SCHEDULER TESTS PASSED!")

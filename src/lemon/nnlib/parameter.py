@@ -97,7 +97,7 @@ class Parameter:
         return self.data ** (other.data if isinstance(other, Parameter) else other)
 
     def __rpow__(self, other):
-        return other ** self.data
+        return other**self.data
 
     def __matmul__(self, other):
         return self.data @ (other.data if isinstance(other, Parameter) else other)

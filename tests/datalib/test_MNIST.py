@@ -24,7 +24,9 @@ def test_mnist_dataset():
     try:
         # Test 1: Download MNIST (flatten=True for MLP tests)
         try:
-            train_dataset = MNIST(root=temp_dir, train=True, download=True, flatten=True)
+            train_dataset = MNIST(
+                root=temp_dir, train=True, download=True, flatten=True
+            )
             test_dataset = MNIST(root=temp_dir, train=False, flatten=True)
 
             assert len(train_dataset) == 60000, "Training set should have 60000 samples"
@@ -127,7 +129,9 @@ def test_mnist_with_dataloader():
     try:
         # Download MNIST (flatten=True for MLP tests)
         try:
-            train_dataset = MNIST(root=temp_dir, train=True, download=True, flatten=True)
+            train_dataset = MNIST(
+                root=temp_dir, train=True, download=True, flatten=True
+            )
         except Exception as e:
             print(f"  ⚠️  MNIST download skipped (no internet connection)")
             return
@@ -210,7 +214,9 @@ def test_mnist_training_integration():
     try:
         # Download MNIST (flatten=True for MLP tests)
         try:
-            train_dataset = MNIST(root=temp_dir, train=True, download=True, flatten=True)
+            train_dataset = MNIST(
+                root=temp_dir, train=True, download=True, flatten=True
+            )
         except Exception as e:
             print(f"  ⚠️  MNIST training test skipped (no internet connection)")
             return

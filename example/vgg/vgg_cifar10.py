@@ -14,10 +14,10 @@ lm.cuda.enable_if_available()
 
 # VGG設定
 VGG_CONFIGS = {
-    'vgg11': [1, 1, 2, 2, 2],
-    'vgg13': [2, 2, 2, 2, 2],
-    'vgg16': [2, 2, 3, 3, 3],
-    'vgg19': [2, 2, 4, 4, 4],
+    "vgg11": [1, 1, 2, 2, 2],
+    "vgg13": [2, 2, 2, 2, 2],
+    "vgg16": [2, 2, 3, 3, 3],
+    "vgg19": [2, 2, 4, 4, 4],
 }
 
 
@@ -28,7 +28,9 @@ def make_vgg_layers(config, in_channels=3):
 
     for num_convs, out_channels in zip(config, channels):
         for _ in range(num_convs):
-            layers.append(lm.Conv2d(in_channels, out_channels, kernel_size=3, padding=1))
+            layers.append(
+                lm.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+            )
             layers.append(lm.Relu())
             in_channels = out_channels
         layers.append(lm.MaxPool2d(kernel_size=2, stride=2))
@@ -39,7 +41,7 @@ def make_vgg_layers(config, in_channels=3):
 class VGG(lm.Module):
     """VGGモデル"""
 
-    def __init__(self, config_name='vgg16', num_classes=10, in_channels=3):
+    def __init__(self, config_name="vgg16", num_classes=10, in_channels=3):
         super().__init__()
         config = VGG_CONFIGS[config_name]
 
@@ -53,7 +55,7 @@ class VGG(lm.Module):
             lm.Linear(512, 512),
             lm.Relu(),
             lm.Dropout(0.5),
-            lm.Linear(512, num_classes)
+            lm.Linear(512, num_classes),
         )
 
     def forward(self, x):
@@ -71,7 +73,7 @@ train_set = lm.Subset(train_dataset, list(range(1000)))
 test_set = lm.Subset(test_dataset, list(range(200)))
 
 # Model
-model = VGG('vgg16', num_classes=10)
+model = VGG("vgg16", num_classes=10)
 
 # Training / 訓練
 trainer = lm.Trainer(

@@ -66,7 +66,9 @@ class FashionMNIST(_MNISTLikeDataset):
             "t10k-labels-idx1-ubyte.gz",
         ]
 
-    def __init__(self, root="./data", train=True, download=False, transform=None, flatten=False):
+    def __init__(
+        self, root="./data", train=True, download=False, transform=None, flatten=False
+    ):
         self.root = os.path.join(root, "fashion_mnist")
         self.train = train
         self.transform = transform

@@ -68,7 +68,7 @@ def test_uniform_():
 def test_kaiming_uniform_():
     """Test Kaiming uniform initialization for ReLU"""
     fc = nl.Linear(100, 200)
-    nl.init.kaiming_uniform_(fc.weight, nonlinearity='relu')
+    nl.init.kaiming_uniform_(fc.weight, nonlinearity="relu")
 
     weight_np = nm.as_numpy(fc.weight.data)
 
@@ -90,7 +90,7 @@ def test_kaiming_uniform_():
 def test_kaiming_normal_():
     """Test Kaiming normal initialization for ReLU"""
     fc = nl.Linear(100, 200)
-    nl.init.kaiming_normal_(fc.weight, nonlinearity='relu')
+    nl.init.kaiming_normal_(fc.weight, nonlinearity="relu")
 
     weight_np = nm.as_numpy(fc.weight.data)
 
@@ -112,13 +112,13 @@ def test_kaiming_with_leaky_relu():
     """Test Kaiming initialization with LeakyReLU"""
     fc = nl.Linear(100, 200)
     negative_slope = 0.1
-    nl.init.kaiming_normal_(fc.weight, a=negative_slope, nonlinearity='leaky_relu')
+    nl.init.kaiming_normal_(fc.weight, a=negative_slope, nonlinearity="leaky_relu")
 
     weight_np = nm.as_numpy(fc.weight.data)
 
     # Calculate expected std
     fan_in = 100
-    gain = np.sqrt(2.0 / (1 + negative_slope ** 2))
+    gain = np.sqrt(2.0 / (1 + negative_slope**2))
     expected_std = gain / np.sqrt(fan_in)
 
     # Check std is close to expected value
@@ -208,7 +208,7 @@ def test_fan_calculation_for_conv():
     from lemon.nnlib.parameter import Parameter
 
     weight = Parameter(nm.zeros((32, 16, 3, 3)))
-    nl.init.kaiming_normal_(weight, mode='fan_in', nonlinearity='relu')
+    nl.init.kaiming_normal_(weight, mode="fan_in", nonlinearity="relu")
 
     weight_np = nm.as_numpy(weight.data)
 
@@ -225,7 +225,7 @@ def test_fan_calculation_for_conv():
 def test_mode_fan_out():
     """Test initialization with fan_out mode"""
     fc = nl.Linear(100, 200)
-    nl.init.kaiming_normal_(fc.weight, mode='fan_out', nonlinearity='relu')
+    nl.init.kaiming_normal_(fc.weight, mode="fan_out", nonlinearity="relu")
 
     weight_np = nm.as_numpy(fc.weight.data)
 
@@ -246,7 +246,7 @@ def test_invalid_mode():
     weight = Parameter(nm.zeros((10, 20)))
 
     with pytest.raises(ValueError, match="Mode.*not supported"):
-        nl.init.kaiming_normal_(weight, mode='invalid_mode')
+        nl.init.kaiming_normal_(weight, mode="invalid_mode")
 
 
 def test_invalid_nonlinearity():
@@ -256,7 +256,7 @@ def test_invalid_nonlinearity():
     weight = Parameter(nm.zeros((10, 20)))
 
     with pytest.raises(ValueError, match="Unsupported nonlinearity"):
-        nl.init.kaiming_normal_(weight, nonlinearity='invalid_activation')
+        nl.init.kaiming_normal_(weight, nonlinearity="invalid_activation")
 
 
 def test_1d_tensor_error():
@@ -277,8 +277,8 @@ def test_real_world_scenario():
     fc3 = nl.Linear(128, 10)
 
     # Initialize with Kaiming for ReLU
-    nl.init.kaiming_normal_(fc1.weight, nonlinearity='relu')
-    nl.init.kaiming_normal_(fc2.weight, nonlinearity='relu')
+    nl.init.kaiming_normal_(fc1.weight, nonlinearity="relu")
+    nl.init.kaiming_normal_(fc2.weight, nonlinearity="relu")
     nl.init.xavier_normal_(fc3.weight)  # Last layer with Softmax
 
     # Initialize biases to zero

@@ -10,7 +10,14 @@ if parent_dir not in sys.path:
 
 from lemon.datasets.vision import MNIST, CIFAR10
 from lemon.datasets.tabular import Iris, CSVDataset
-from lemon.nnlib.data import Dataset, DataLoader, TensorDataset, ConcatDataset, Subset, random_split
+from lemon.nnlib.data import (
+    Dataset,
+    DataLoader,
+    TensorDataset,
+    ConcatDataset,
+    Subset,
+    random_split,
+)
 from lemon import numlib as nm
 
 

@@ -42,41 +42,47 @@ from lemon.nnlib.metrics import (
 # Progress Logger
 # ==============================
 
+
 # ANSI Color Codes for Modern Style
 class ModernColors:
     """Modern-themed ANSI color codes"""
+
     # Neon colors
-    CYAN = '\033[96m'      # Bright cyan (ネオンシアン)
-    MAGENTA = '\033[95m'   # Bright magenta (ネオンマゼンタ)
-    GREEN = '\033[92m'     # Bright green (ネオングリーン)
-    YELLOW = '\033[93m'    # Bright yellow (ネオンイエロー)
-    RED = '\033[91m'       # Bright red (ネオンレッド)
-    BLUE = '\033[94m'      # Bright blue (ネオンブルー)
+    CYAN = "\033[96m"  # Bright cyan (ネオンシアン)
+    MAGENTA = "\033[95m"  # Bright magenta (ネオンマゼンタ)
+    GREEN = "\033[92m"  # Bright green (ネオングリーン)
+    YELLOW = "\033[93m"  # Bright yellow (ネオンイエロー)
+    RED = "\033[91m"  # Bright red (ネオンレッド)
+    BLUE = "\033[94m"  # Bright blue (ネオンブルー)
 
     # Special effects
-    BOLD = '\033[1m'       # Bold
-    DIM = '\033[2m'        # Dim
-    UNDERLINE = '\033[4m'  # Underline
-    BLINK = '\033[5m'      # Blink (注意: 一部の端末では動作しない)
-    REVERSE = '\033[7m'    # Reverse colors
+    BOLD = "\033[1m"  # Bold
+    DIM = "\033[2m"  # Dim
+    UNDERLINE = "\033[4m"  # Underline
+    BLINK = "\033[5m"  # Blink (注意: 一部の端末では動作しない)
+    REVERSE = "\033[7m"  # Reverse colors
 
     # Reset
-    RESET = '\033[0m'      # Reset all formatting
+    RESET = "\033[0m"  # Reset all formatting
 
     @staticmethod
     def is_enabled():
         """Check if ANSI colors should be enabled"""
         # Force enable if FORCE_COLOR is set
-        if os.environ.get('FORCE_COLOR'):
+        if os.environ.get("FORCE_COLOR"):
             return True
         # Disable colors if NO_COLOR env var is set
-        if os.environ.get('NO_COLOR'):
+        if os.environ.get("NO_COLOR"):
             return False
         # Enable if running in a terminal or if TERM is set
-        if os.environ.get('TERM'):
+        if os.environ.get("TERM"):
             return True
         # Fallback: check if stdout is a tty
-        return hasattr(sys, 'stdout') and hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+        return (
+            hasattr(sys, "stdout")
+            and hasattr(sys.stdout, "isatty")
+            and sys.stdout.isatty()
+        )
 
 
 class ProgressLogger:
@@ -101,13 +107,13 @@ class ProgressLogger:
         Display style: 'default' or 'modern' (default: 'modern')
     """
 
-    def __init__(self, experiment_dir=None, verbose=1, metrics=None, style='modern'):
+    def __init__(self, experiment_dir=None, verbose=1, metrics=None, style="modern"):
         self.experiment_dir = experiment_dir
         self.verbose = verbose
         self.logging_enabled = experiment_dir is not None
         self.metrics = metrics or []  # Store metric objects
         self.style = style  # Display style
-        self.use_colors = style == 'modern' and ModernColors.is_enabled()
+        self.use_colors = style == "modern" and ModernColors.is_enabled()
 
         # File paths (only if logging enabled)
         if self.logging_enabled:
@@ -163,34 +169,49 @@ class ProgressLogger:
                 json.dump(self.metadata, f, indent=2)
 
         if self.verbose > 0:
-            if self.style == 'modern' and self.use_colors:
+            if self.style == "modern" and self.use_colors:
                 # Modern style initialization
                 C = ModernColors
                 print(f"\n{C.CYAN}{'═' * 50}{C.RESET}")
-                print(f"{C.CYAN}◆{C.RESET} {C.MAGENTA}{C.BOLD}NEURAL NETWORK INITIALIZATION{C.RESET}")
+                print(
+                    f"{C.CYAN}◆{C.RESET} {C.MAGENTA}{C.BOLD}NEURAL NETWORK INITIALIZATION{C.RESET}"
+                )
                 print(f"{C.CYAN}{'═' * 50}{C.RESET}")
-                print(f"{C.GREEN}▸{C.RESET} {C.DIM}Parameters:{C.RESET} {C.YELLOW}{total_params:,}{C.RESET}")
+                print(
+                    f"{C.GREEN}▸{C.RESET} {C.DIM}Parameters:{C.RESET} {C.YELLOW}{total_params:,}{C.RESET}"
+                )
 
                 # Device info with CUDA memory
-                device_str = self.metadata['device'].upper()
-                if self.metadata['device'] == 'cuda':
+                device_str = self.metadata["device"].upper()
+                if self.metadata["device"] == "cuda":
                     try:
                         # Get CUDA memory info
                         import cupy as cp
+
                         mempool = cp.get_default_memory_pool()
                         total_bytes = mempool.total_bytes()
                         used_bytes = mempool.used_bytes()
-                        total_gb = total_bytes / (1024 ** 3)
-                        used_gb = used_bytes / (1024 ** 3)
-                        print(f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}")
-                        print(f"{C.GREEN}▸{C.RESET} {C.DIM}GPU Memory:{C.RESET} {C.YELLOW}{used_gb:.2f}GB{C.RESET} / {C.DIM}{total_gb:.2f}GB{C.RESET}")
+                        total_gb = total_bytes / (1024**3)
+                        used_gb = used_bytes / (1024**3)
+                        print(
+                            f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}"
+                        )
+                        print(
+                            f"{C.GREEN}▸{C.RESET} {C.DIM}GPU Memory:{C.RESET} {C.YELLOW}{used_gb:.2f}GB{C.RESET} / {C.DIM}{total_gb:.2f}GB{C.RESET}"
+                        )
                     except:
-                        print(f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}")
+                        print(
+                            f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}"
+                        )
                 else:
-                    print(f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.BLUE}{device_str}{C.RESET}")
+                    print(
+                        f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.BLUE}{device_str}{C.RESET}"
+                    )
 
                 if self.logging_enabled:
-                    print(f"{C.GREEN}▸{C.RESET} {C.DIM}Experiment:{C.RESET} {self.experiment_dir}")
+                    print(
+                        f"{C.GREEN}▸{C.RESET} {C.DIM}Experiment:{C.RESET} {self.experiment_dir}"
+                    )
                 print(f"{C.CYAN}{'═' * 50}{C.RESET}\n")
             else:
                 # Default style
@@ -337,10 +358,28 @@ class ProgressLogger:
         grad_norm,
     ):
         """Print epoch summary to console"""
-        if self.style == 'modern' and self.use_colors:
-            self._print_epoch_modern(epoch, total_epochs, train_metrics, val_metrics, duration, is_best, lr, grad_norm)
+        if self.style == "modern" and self.use_colors:
+            self._print_epoch_modern(
+                epoch,
+                total_epochs,
+                train_metrics,
+                val_metrics,
+                duration,
+                is_best,
+                lr,
+                grad_norm,
+            )
         else:
-            self._print_epoch_default(epoch, total_epochs, train_metrics, val_metrics, duration, is_best, lr, grad_norm)
+            self._print_epoch_default(
+                epoch,
+                total_epochs,
+                train_metrics,
+                val_metrics,
+                duration,
+                is_best,
+                lr,
+                grad_norm,
+            )
 
     def _print_epoch_default(
         self,
@@ -400,13 +439,17 @@ class ProgressLogger:
 
         # Training metrics
         train_str = self._format_metrics_modern(train_metrics)
-        print(f"{C.CYAN}»{C.RESET} {C.MAGENTA}{timestamp}{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET} {C.GREEN}▸{C.RESET} {C.GREEN}{train_str}{C.RESET} {C.YELLOW}[{duration:.1f}s]{C.RESET}")
+        print(
+            f"{C.CYAN}»{C.RESET} {C.MAGENTA}{timestamp}{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET} {C.GREEN}▸{C.RESET} {C.GREEN}{train_str}{C.RESET} {C.YELLOW}[{duration:.1f}s]{C.RESET}"
+        )
 
         # Validation metrics
         if val_metrics:
             val_str = self._format_metrics_modern(val_metrics)
             best_marker = f" {C.YELLOW}★{C.RESET}" if is_best else ""
-            print(f"{C.CYAN}»{C.RESET} {C.MAGENTA}VAL{C.RESET} {C.GREEN}▸{C.RESET} {C.MAGENTA}{val_str}{C.RESET}{best_marker}")
+            print(
+                f"{C.CYAN}»{C.RESET} {C.MAGENTA}VAL{C.RESET} {C.GREEN}▸{C.RESET} {C.MAGENTA}{val_str}{C.RESET}{best_marker}"
+            )
 
         # Additional info (verbose=2)
         if self.verbose >= 2 and (lr is not None or grad_norm is not None):
@@ -634,7 +677,7 @@ class Trainer:
         restore_best_weights=False,
         verbose=1,
         seed=None,
-        style='modern',
+        style="modern",
     ):
         # Validation
         if not isinstance(model, nl.Module):
@@ -730,7 +773,10 @@ class Trainer:
         # Initialize history and logger
         self.history = History()
         logger = ProgressLogger(
-            experiment_dir=self.experiment_dir, verbose=self.verbose, metrics=self.metrics, style=self.style
+            experiment_dir=self.experiment_dir,
+            verbose=self.verbose,
+            metrics=self.metrics,
+            style=self.style,
         )
 
         # Start training
@@ -779,7 +825,7 @@ class Trainer:
                     progress = (batch_idx + 1) / total_batches
                     current_loss = float(nm.mean(epoch_losses).item())
 
-                    if logger.style == 'modern' and logger.use_colors:
+                    if logger.style == "modern" and logger.use_colors:
                         # Modern style progress
                         C = ModernColors
                         bar_length = 20

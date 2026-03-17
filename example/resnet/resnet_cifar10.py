@@ -19,11 +19,18 @@ class BasicBlock(lm.Module):
 
     def __init__(self, in_channels, out_channels, stride=1, downsample=None):
         super().__init__()
-        self.conv1 = lm.Conv2d(in_channels, out_channels, kernel_size=3,
-                               stride=stride, padding=1, bias=False)
+        self.conv1 = lm.Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+            bias=False,
+        )
         self.bn1 = lm.BatchNorm2d(out_channels)
-        self.conv2 = lm.Conv2d(out_channels, out_channels, kernel_size=3,
-                               padding=1, bias=False)
+        self.conv2 = lm.Conv2d(
+            out_channels, out_channels, kernel_size=3, padding=1, bias=False
+        )
         self.bn2 = lm.BatchNorm2d(out_channels)
         self.downsample = downsample
 
@@ -52,8 +59,9 @@ class ResNet(lm.Module):
         self.in_channels = 64
 
         # CIFAR-10用に最初の層を簡略化
-        self.conv1 = lm.Conv2d(in_channels, 64, kernel_size=3, stride=1,
-                               padding=1, bias=False)
+        self.conv1 = lm.Conv2d(
+            in_channels, 64, kernel_size=3, stride=1, padding=1, bias=False
+        )
         self.bn1 = lm.BatchNorm2d(64)
 
         # Residualブロック
@@ -70,9 +78,14 @@ class ResNet(lm.Module):
         downsample = None
         if stride != 1 or self.in_channels != out_channels:
             downsample = lm.Sequential(
-                lm.Conv2d(self.in_channels, out_channels, kernel_size=1,
-                          stride=stride, bias=False),
-                lm.BatchNorm2d(out_channels)
+                lm.Conv2d(
+                    self.in_channels,
+                    out_channels,
+                    kernel_size=1,
+                    stride=stride,
+                    bias=False,
+                ),
+                lm.BatchNorm2d(out_channels),
             )
 
         layers = []

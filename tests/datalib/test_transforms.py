@@ -6,7 +6,14 @@ parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
-from lemon.transforms import Normalize, ToTensor, RandomNoise, RandomHorizontalFlip, Compose, Lambda
+from lemon.transforms import (
+    Normalize,
+    ToTensor,
+    RandomNoise,
+    RandomHorizontalFlip,
+    Compose,
+    Lambda,
+)
 from lemon.nnlib.data import Dataset, TensorDataset
 from lemon import numlib as nm
 

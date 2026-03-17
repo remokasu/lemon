@@ -127,13 +127,13 @@ class GRUCell(Module):
         # gi[:, 0:h] = input reset gate
         # gi[:, h:2h] = input update gate
         # gi[:, 2h:3h] = input new gate
-        i_r = gi[:, 0:self.hidden_size]
-        i_z = gi[:, self.hidden_size:2*self.hidden_size]
-        i_n = gi[:, 2*self.hidden_size:3*self.hidden_size]
+        i_r = gi[:, 0 : self.hidden_size]
+        i_z = gi[:, self.hidden_size : 2 * self.hidden_size]
+        i_n = gi[:, 2 * self.hidden_size : 3 * self.hidden_size]
 
-        h_r = gh[:, 0:self.hidden_size]
-        h_z = gh[:, self.hidden_size:2*self.hidden_size]
-        h_n = gh[:, 2*self.hidden_size:3*self.hidden_size]
+        h_r = gh[:, 0 : self.hidden_size]
+        h_z = gh[:, self.hidden_size : 2 * self.hidden_size]
+        h_n = gh[:, 2 * self.hidden_size : 3 * self.hidden_size]
 
         # リセットゲートと更新ゲート
         r = 1 / (1 + nm.exp(-(i_r + h_r)))  # sigmoid(i_r + h_r)
