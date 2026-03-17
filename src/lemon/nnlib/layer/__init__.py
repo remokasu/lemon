@@ -16,5 +16,12 @@ from lemon.nnlib.layer.flatten import Flatten
 from lemon.nnlib.layer.batch_norm_1d import batch_norm_1d, BatchNorm1d
 from lemon.nnlib.layer.batch_norm_2d import batch_norm_2d, BatchNorm2d
 
+from lemon.nnlib.layer.layer_norm import layer_norm, LayerNorm
+from lemon.nnlib.layer.rms_norm import rms_norm, RMSNorm
+from lemon.nnlib.layer.embedding import embedding, Embedding
+
 # RNN layers
 from lemon.nnlib.layer.rnn import *
+
+# Transformer layers
+from lemon.nnlib.layer.transformer import *

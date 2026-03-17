@@ -169,58 +169,11 @@ class ProgressLogger:
                 json.dump(self.metadata, f, indent=2)
 
         if self.verbose > 0:
-            if self.style == "modern" and self.use_colors:
-                # Modern style initialization
-                C = ModernColors
-                print(f"\n{C.CYAN}{'═' * 50}{C.RESET}")
-                print(
-                    f"{C.CYAN}◆{C.RESET} {C.MAGENTA}{C.BOLD}NEURAL NETWORK INITIALIZATION{C.RESET}"
-                )
-                print(f"{C.CYAN}{'═' * 50}{C.RESET}")
-                print(
-                    f"{C.GREEN}▸{C.RESET} {C.DIM}Parameters:{C.RESET} {C.YELLOW}{total_params:,}{C.RESET}"
-                )
-
-                # Device info with CUDA memory
-                device_str = self.metadata["device"].upper()
-                if self.metadata["device"] == "cuda":
-                    try:
-                        # Get CUDA memory info
-                        import cupy as cp
-
-                        mempool = cp.get_default_memory_pool()
-                        total_bytes = mempool.total_bytes()
-                        used_bytes = mempool.used_bytes()
-                        total_gb = total_bytes / (1024**3)
-                        used_gb = used_bytes / (1024**3)
-                        print(
-                            f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}"
-                        )
-                        print(
-                            f"{C.GREEN}▸{C.RESET} {C.DIM}GPU Memory:{C.RESET} {C.YELLOW}{used_gb:.2f}GB{C.RESET} / {C.DIM}{total_gb:.2f}GB{C.RESET}"
-                        )
-                    except:
-                        print(
-                            f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.CYAN}{C.BOLD}⚡ {device_str}{C.RESET}"
-                        )
-                else:
-                    print(
-                        f"{C.GREEN}▸{C.RESET} {C.DIM}Device:{C.RESET} {C.BLUE}{device_str}{C.RESET}"
-                    )
-
-                if self.logging_enabled:
-                    print(
-                        f"{C.GREEN}▸{C.RESET} {C.DIM}Experiment:{C.RESET} {self.experiment_dir}"
-                    )
-                print(f"{C.CYAN}{'═' * 50}{C.RESET}\n")
+            device_str = self.metadata["device"].upper()
+            if self.logging_enabled:
+                print(f"params={total_params:,} device={device_str} experiment={self.experiment_dir}")
             else:
-                # Default style
-                print(f"[{self._timestamp()}] Training started")
-                print(f"  Parameters: {total_params:,}")
-                print(f"  Device: {self.metadata['device']}")
-                if self.logging_enabled:
-                    print(f"  Experiment: {self.experiment_dir}")
-                print()
+                print(f"params={total_params:,} device={device_str}")
 
     def start_epoch(self, epoch):
         """Mark epoch start"""
@@ -435,20 +388,25 @@ class ProgressLogger:
 
         # Epoch header
         epoch_str = f"{epoch + 1:03d}/{total_epochs:03d}"
-        timestamp = self._timestamp()[11:]  # 時刻のみ (HH:MM:SS)
+        timestamp = self.epoch_start_time.strftime("%H:%M:%S")
 
         # Training metrics
         train_str = self._format_metrics_modern(train_metrics)
-        print(
-            f"{C.CYAN}»{C.RESET} {C.MAGENTA}{timestamp}{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET} {C.GREEN}▸{C.RESET} {C.GREEN}{train_str}{C.RESET} {C.YELLOW}[{duration:.1f}s]{C.RESET}"
-        )
 
         # Validation metrics
         if val_metrics:
             val_str = self._format_metrics_modern(val_metrics)
-            best_marker = f" {C.YELLOW}★{C.RESET}" if is_best else ""
             print(
-                f"{C.CYAN}»{C.RESET} {C.MAGENTA}VAL{C.RESET} {C.GREEN}▸{C.RESET} {C.MAGENTA}{val_str}{C.RESET}{best_marker}"
+                f"{C.CYAN}»{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET}"
+                f" {C.DIM}│{C.RESET} {C.GREEN}{train_str}{C.RESET}"
+                f" {C.DIM}│{C.RESET} {C.MAGENTA}val{C.RESET} {C.MAGENTA}{val_str}{C.RESET}"
+                f" {C.YELLOW}[{duration:.1f}s]{C.RESET}"
+            )
+        else:
+            print(
+                f"{C.CYAN}»{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET}"
+                f" {C.DIM}│{C.RESET} {C.GREEN}{train_str}{C.RESET}"
+                f" {C.YELLOW}[{duration:.1f}s]{C.RESET}"
             )
 
         # Additional info (verbose=2)
@@ -1044,7 +1002,7 @@ class Trainer:
 
         path = os.path.join(self.experiment_dir, filename)
 
-        import lemon.onnx_io as ox
+        import lemon.onnxlib as ox
 
         input_shape = ox._infer_input_shape(self.model)
         sample_input = nm.zeros((1,) + input_shape)
@@ -1064,7 +1022,7 @@ class Trainer:
         --------
         >>> learner.save("my_model.onnx")
         """
-        import lemon.onnx_io as ox
+        import lemon.onnxlib as ox
 
         input_shape = ox._infer_input_shape(self.model)
         sample_input = nm.zeros((1,) + input_shape)

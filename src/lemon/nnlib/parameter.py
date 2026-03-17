@@ -169,6 +169,15 @@ class Parameter:
     def __setitem__(self, key, value):
         self.data[key] = value.data if isinstance(value, Parameter) else value
 
+    def __deepcopy__(self, memo):
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        result.__dict__["data"] = copy.deepcopy(self.data, memo)
+        return result
+
     # ========== その他 ==========
     def __len__(self):
         return len(self.data)

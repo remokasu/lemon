@@ -1,5 +1,5 @@
 """
-Tests for onnx_io - ONNX model export/import functionality
+Tests for onnxlib - ONNX model export/import functionality
 """
 
 import sys
@@ -25,7 +25,7 @@ except ImportError:
 
 from lemon import numlib as nm
 from lemon import nnlib as nl
-from lemon import onnx_io as ox
+from lemon import onnxlib as ox
 
 
 # Skip all tests if ONNX is not installed
@@ -154,14 +154,10 @@ def test_activation_functions(temp_dir):
         ("Softplus", nl.Softplus()),
         ("Softsign", nl.Softsign()),
         ("HardSigmoid", nl.HardSigmoid()),
-        ("ThresholdedRelu", nl.ThresholdedRelu(alpha=1.0)),
-    ]
-
-    # These activations may not be supported in all ONNX opset versions
-    # Test them but allow failures
-    optional_activations = [
         ("HardSwish", nl.HardSwish()),
         ("Mish", nl.Mish()),
+        ("Silu", nl.Silu()),
+        ("ThresholdedRelu", nl.ThresholdedRelu(alpha=1.0)),
     ]
 
     # PRelu requires special handling (has parameters)
@@ -184,19 +180,25 @@ def test_activation_functions(temp_dir):
 
         print(f"  ✓ {name}")
 
-    # Test optional activations (may fail on some ONNX versions)
-    for name, activation in optional_activations:
-        try:
-            model = nl.Sequential(nl.Linear(10, 10), activation)
-            filepath = os.path.join(temp_dir, f"activation_{name.lower()}.onnx")
-            sample_input = nm.randn(1, 10)
-
-            ox.export_model(model, filepath, sample_input=sample_input, verbose=False)
-            print(f"  ✓ {name}")
-        except Exception as e:
-            print(f"  ⚠ {name} (skipped: not supported in current ONNX opset)")
-
     print("  ✅ All activation functions export passed")
+
+
+def test_glu_export(temp_dir):
+    """Test exporting GLU activation"""
+    print("Testing GLU export...")
+
+    model = nl.Sequential(nl.Linear(10, 20), nl.Glu(dim=-1))
+
+    filepath = os.path.join(temp_dir, "activation_glu.onnx")
+    sample_input = nm.randn(1, 20)
+
+    ox.export_model(model, filepath, sample_input=sample_input, verbose=False)
+
+    assert os.path.exists(filepath), "GLU ONNX file not created"
+    onnx_model = onnx.load(filepath)
+    check_model(onnx_model)
+
+    print("  ✅ GLU export passed")
 
 
 def test_pooling_layers(temp_dir):
@@ -299,10 +301,11 @@ def test_tracer_registry():
     """Test that the decorator-based layer registration works"""
     print("Testing tracer registry...")
 
-    tracer = ox._ComputationGraphTracer()
+    from lemon.onnxlib.tracer import _TRACER_REGISTRY
+    tracer = ox.ComputationGraphTracer()
 
     # Check that layer tracers are registered
-    assert len(tracer.layer_tracers) > 0, "No layers registered"
+    assert len(_TRACER_REGISTRY) > 0, "No layers registered"
 
     # Check specific layers
     expected_layers = [
@@ -315,12 +318,12 @@ def test_tracer_registry():
     ]
 
     for layer_type in expected_layers:
-        assert layer_type in tracer.layer_tracers, (
+        assert layer_type in _TRACER_REGISTRY, (
             f"{layer_type.__name__} not registered"
         )
         print(f"  ✓ {layer_type.__name__} registered")
 
-    print(f"  ✅ Tracer registry test passed ({len(tracer.layer_tracers)} layers)")
+    print(f"  ✅ Tracer registry test passed ({len(_TRACER_REGISTRY)} layers)")
 
 
 def test_unsupported_layer_error():
@@ -502,6 +505,95 @@ def test_load_weights_correctness(temp_dir):
         print("  ✅ Test completed (load_model needs implementation)")
 
 
+def test_normalization_layers(temp_dir):
+    """Test exporting LayerNorm and RMSNorm"""
+    print("Testing normalization layers...")
+
+    cases = [
+        ("LayerNorm", nl.Sequential(nl.Linear(10, 16), nl.LayerNorm(16))),
+        ("RMSNorm",   nl.Sequential(nl.Linear(10, 16), nl.RMSNorm(16))),
+    ]
+
+    for name, model in cases:
+        filepath = os.path.join(temp_dir, f"norm_{name.lower()}.onnx")
+        sample_input = nm.randn(2, 10)
+
+        ox.export_model(model, filepath, sample_input=sample_input, verbose=False)
+
+        assert os.path.exists(filepath), f"{name} ONNX file not created"
+        onnx_model = onnx.load(filepath)
+        check_model(onnx_model)
+
+        print(f"  ✓ {name}")
+
+    print("  ✅ Normalization layers export passed")
+
+
+def test_embedding_export(temp_dir):
+    """Test exporting Embedding layer"""
+    print("Testing Embedding export...")
+
+    model = nl.Sequential(nl.Embedding(100, 16))
+
+    filepath = os.path.join(temp_dir, "embedding.onnx")
+    # Embedding takes integer input
+    sample_input = np.array([[1, 2, 3, 4]], dtype=np.int64)
+
+    ox.export_model(model, filepath, sample_input=sample_input, verbose=False)
+
+    assert os.path.exists(filepath), "Embedding ONNX file not created"
+    onnx_model = onnx.load(filepath)
+    check_model(onnx_model)
+
+    print("  ✅ Embedding export passed")
+
+
+def test_transformer_encoder_export(temp_dir):
+    """Test exporting Transformer encoder components"""
+    from lemon.nnlib.layer.transformer import (
+        PositionalEncoding,
+        MultiHeadAttention,
+        TransformerEncoderLayer,
+        TransformerEncoder,
+    )
+
+    print("Testing Transformer encoder export...")
+
+    d_model, seq_len = 16, 8
+
+    # PositionalEncoding
+    model = nl.Sequential(nl.Linear(10, d_model), PositionalEncoding(d_model, max_len=seq_len))
+    filepath = os.path.join(temp_dir, "positional_encoding.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, seq_len, 10), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ PositionalEncoding")
+
+    # MultiHeadAttention
+    model = nl.Sequential(MultiHeadAttention(d_model, num_heads=2))
+    filepath = os.path.join(temp_dir, "mha.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, seq_len, d_model), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ MultiHeadAttention")
+
+    # TransformerEncoderLayer
+    model = nl.Sequential(TransformerEncoderLayer(d_model, num_heads=2, d_ff=32))
+    filepath = os.path.join(temp_dir, "encoder_layer.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, seq_len, d_model), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ TransformerEncoderLayer")
+
+    # TransformerEncoder
+    enc_layer = TransformerEncoderLayer(d_model, num_heads=2, d_ff=32)
+    encoder = TransformerEncoder(enc_layer, num_layers=2)
+    model = nl.Sequential(encoder)
+    filepath = os.path.join(temp_dir, "encoder.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, seq_len, d_model), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ TransformerEncoder")
+
+    print("  ✅ Transformer encoder export passed")
+
+
 if __name__ == "__main__":
     print("Running ONNX tests...\n")
 
@@ -515,6 +607,7 @@ if __name__ == "__main__":
         test_batchnorm_model_export(tmpdir)
         test_dropout_model_export(tmpdir)
         test_activation_functions(tmpdir)
+        test_glu_export(tmpdir)
         test_pooling_layers(tmpdir)
         test_dynamic_batch_size(tmpdir)
         test_model_without_bias(tmpdir)
@@ -523,5 +616,8 @@ if __name__ == "__main__":
         test_complex_model(tmpdir)
         test_export_and_load_roundtrip(tmpdir)
         test_load_weights_correctness(tmpdir)
+        test_normalization_layers(tmpdir)
+        test_embedding_export(tmpdir)
+        test_transformer_encoder_export(tmpdir)
 
     print("\n✅ All ONNX tests passed!")

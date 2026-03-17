@@ -14,3 +14,5 @@ from lemon.nnlib.activation.hard_swish import hard_swish, HardSwish
 from lemon.nnlib.activation.mish import mish, Mish
 from lemon.nnlib.activation.thresholded_relu import thresholded_relu, ThresholdedRelu
 from lemon.nnlib.activation.prelu import prelu, PRelu
+from lemon.nnlib.activation.silu import silu, Silu
+from lemon.nnlib.activation.glu import glu, Glu

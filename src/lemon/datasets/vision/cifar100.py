@@ -138,7 +138,10 @@ class CIFAR100(_DownloadableDataset):
             # Load training batch
             file_path = os.path.join(self.root, "train")
             with open(file_path, "rb") as f:
-                batch = pickle.load(f, encoding="bytes")
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    batch = pickle.load(f, encoding="bytes")
                 data = xp.array(batch[b"data"])
                 fine_labels = xp.array(batch[b"fine_labels"], dtype=xp.int64)
                 coarse_labels = xp.array(batch[b"coarse_labels"], dtype=xp.int64)
@@ -146,7 +149,10 @@ class CIFAR100(_DownloadableDataset):
             # Load test batch
             file_path = os.path.join(self.root, "test")
             with open(file_path, "rb") as f:
-                batch = pickle.load(f, encoding="bytes")
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    batch = pickle.load(f, encoding="bytes")
                 data = xp.array(batch[b"data"])
                 fine_labels = xp.array(batch[b"fine_labels"], dtype=xp.int64)
                 coarse_labels = xp.array(batch[b"coarse_labels"], dtype=xp.int64)
