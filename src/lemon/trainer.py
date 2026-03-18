@@ -394,19 +394,20 @@ class ProgressLogger:
         train_str = self._format_metrics_modern(train_metrics)
 
         # Validation metrics
+        best_marker = f" {C.YELLOW}*{C.RESET}" if is_best else ""
         if val_metrics:
             val_str = self._format_metrics_modern(val_metrics)
             print(
                 f"{C.CYAN}»{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET}"
-                f" {C.DIM}│{C.RESET} {C.GREEN}{train_str}{C.RESET}"
-                f" {C.DIM}│{C.RESET} {C.MAGENTA}val{C.RESET} {C.MAGENTA}{val_str}{C.RESET}"
-                f" {C.YELLOW}[{duration:.1f}s]{C.RESET}"
+                f" {C.DIM}│{C.RESET} {C.DIM}train:{C.RESET} {C.GREEN}{train_str}{C.RESET}"
+                f" {C.DIM}│{C.RESET} {C.MAGENTA}val:{C.RESET} {C.MAGENTA}{val_str}{C.RESET}"
+                f"{best_marker} {C.YELLOW}[{duration:.1f}s]{C.RESET}"
             )
         else:
             print(
                 f"{C.CYAN}»{C.RESET} {C.CYAN}{C.BOLD}EP {epoch_str}{C.RESET}"
                 f" {C.DIM}│{C.RESET} {C.GREEN}{train_str}{C.RESET}"
-                f" {C.YELLOW}[{duration:.1f}s]{C.RESET}"
+                f"{best_marker} {C.YELLOW}[{duration:.1f}s]{C.RESET}"
             )
 
         # Additional info (verbose=2)
