@@ -16,3 +16,4 @@ from lemon.nnlib.activation.thresholded_relu import thresholded_relu, Thresholde
 from lemon.nnlib.activation.prelu import prelu, PRelu
 from lemon.nnlib.activation.silu import silu, Silu
 from lemon.nnlib.activation.glu import glu, Glu
+from lemon.nnlib.activation.sign import sign, Sign

@@ -25,3 +25,6 @@ from lemon.nnlib.layer.rnn import *
 
 # Transformer layers
 from lemon.nnlib.layer.transformer import *
+
+# BNN layers
+from lemon.nnlib.layer.bnn import *

@@ -548,6 +548,39 @@ def test_embedding_export(temp_dir):
     print("  ✅ Embedding export passed")
 
 
+def test_bnn_export(temp_dir):
+    """Test exporting Binary Neural Network layers"""
+    print("Testing BNN export...")
+
+    # Sign activation
+    model = nl.Sequential(nl.Linear(10, 10), nl.Sign())
+    filepath = os.path.join(temp_dir, "sign.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, 10), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ Sign")
+
+    # BinaryLinear
+    model = nl.Sequential(nl.BinaryLinear(10, 20), nl.Sign(), nl.BinaryLinear(20, 5))
+    filepath = os.path.join(temp_dir, "binary_linear.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, 10), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ BinaryLinear")
+
+    # BinaryConv2d
+    model = nl.Sequential(
+        nl.BinaryConv2d(3, 8, kernel_size=3, padding=1),
+        nl.Sign(),
+        nl.Flatten(),
+        nl.BinaryLinear(8 * 8 * 8, 10),
+    )
+    filepath = os.path.join(temp_dir, "binary_conv2d.onnx")
+    ox.export_model(model, filepath, sample_input=nm.randn(2, 3, 8, 8), verbose=False)
+    check_model(onnx.load(filepath))
+    print("  ✓ BinaryConv2d")
+
+    print("  ✅ BNN export passed")
+
+
 def test_transformer_encoder_export(temp_dir):
     """Test exporting Transformer encoder components"""
     from lemon.nnlib.layer.transformer import (
@@ -618,6 +651,7 @@ if __name__ == "__main__":
         test_load_weights_correctness(tmpdir)
         test_normalization_layers(tmpdir)
         test_embedding_export(tmpdir)
+        test_bnn_export(tmpdir)
         test_transformer_encoder_export(tmpdir)
 
     print("\n✅ All ONNX tests passed!")

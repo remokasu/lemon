@@ -7,3 +7,4 @@ from lemon.onnxlib.layer import batch_norm
 from lemon.onnxlib.layer import normalization
 from lemon.onnxlib.layer import embedding
 from lemon.onnxlib.layer import transformer
+from lemon.onnxlib.layer import bnn
