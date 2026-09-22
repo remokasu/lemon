@@ -236,6 +236,21 @@ def get_array_module(x: ArrayType) -> Any:
     return cp if (_cuda_enabled and cp and isinstance(x, cp.ndarray)) else np
 
 
+def _array_module_for(data: Any) -> Any:
+    """
+    data を入れる配列のモジュール（numpy / cupy）を返す
+
+    すでに配列なら、その配列のモジュールに従う（渡された配列は動かさない、という numlib の
+    決まりに合わせる。cuda.gpu の中で numpy の値を作っても cupy に化けない）。
+    配列でなければ、今の CPU / GPU の設定に従う。
+    """
+    if isinstance(data, np.ndarray):
+        return np
+    if cp is not None and isinstance(data, cp.ndarray):
+        return cp
+    return cp if _cuda_enabled and cp else np
+
+
 def as_numpy(x: ArrayType) -> np.ndarray:
     """
     Convert array to CPU (numpy array).
@@ -2711,7 +2726,7 @@ class Scalar(Tensor):
         if requires_grad is None:
             requires_grad = autograd.is_enabled()
 
-        xp = cp if _cuda_enabled and cp else np
+        xp = _array_module_for(data)
 
         # If already ndarray
         if isinstance(data, (np.ndarray, (cp.ndarray if cp else type(None)))):
@@ -2972,7 +2987,7 @@ class Boolean(Scalar):
         if isinstance(data, NumType):
             data = data._data
 
-        xp = cp if _cuda_enabled and cp else np
+        xp = _array_module_for(data)
         data = xp.bool_(data)
 
         # Booleanは常に微分不可
@@ -3028,7 +3043,7 @@ class Integer(Scalar):
                 raise CastError("Complex", "Integer")
             data = data._data
 
-        xp = cp if _cuda_enabled and cp else np
+        xp = _array_module_for(data)
 
         # Determine dtype from kind and signed
         if signed:
@@ -3268,7 +3283,7 @@ class Real(Scalar):
                 raise CastError("Complex", "Real")
             data = data._data
 
-        xp = cp if _cuda_enabled and cp else np
+        xp = _array_module_for(data)
 
         if isinstance(data, (np.ndarray, (cp.ndarray if cp else type(None)))) and (
             kind == 64 and data.dtype == xp.float64
@@ -3327,7 +3342,7 @@ class Complex(Scalar):
         if isinstance(value, NumType):
             value = value._data
 
-        xp = cp if _cuda_enabled and cp else np
+        xp = _array_module_for(value)
 
         # Determine dtype from kind
         dtype_map = {64: xp.complex64, 128: xp.complex128}

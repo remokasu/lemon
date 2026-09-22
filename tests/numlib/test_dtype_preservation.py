@@ -155,3 +155,20 @@ def test_literal_does_not_change_the_shape():
     t = nm.tensor(np.ones(3, dtype=np.float32))
     with pytest.raises(nm.TypeMismatchError):
         t + 1.0
+
+
+@pytest.mark.skipif(not nm.cuda_available(), reason="CUDA is not available")
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda d: nm.Real(d, kind=32),
+        lambda d: nm.Real(d),
+        lambda d: nm.Integer(np.asarray(2, dtype=np.int32), kind=32),
+        lambda d: nm.Complex(np.asarray(2 + 0j, dtype=np.complex64), kind=64),
+    ],
+)
+def test_scalar_keeps_the_array_module_of_its_data(make):
+    """cuda.gpu の中でも、numpy の配列から作ったスカラーは numpy のまま（混ざらない）"""
+    with nm.cuda.gpu:
+        s = make(np.asarray(2.0, dtype=np.float32))
+        assert type(s.data).__module__.startswith("numpy")
