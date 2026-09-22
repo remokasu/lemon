@@ -127,7 +127,8 @@ class CIFAR10(_DownloadableDataset):
                     data_list.append(batch[b"data"])
                     targets_list.extend(batch[b"labels"])
 
-            data = xp.concatenate(data_list, axis=0)
+            # pickle から読んだ配列は numpy なので、今の装置の配列にしてからつなぐ
+            data = xp.concatenate([xp.asarray(d) for d in data_list], axis=0)
             targets = xp.array(targets_list, dtype=xp.int64)
         else:
             # Load test batch

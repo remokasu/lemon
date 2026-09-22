@@ -194,3 +194,14 @@ def test_iris_dataset(dataset_root):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "--run-network", "-v", "-s"]))
+
+
+@pytest.mark.network
+@pytest.mark.skipif(not nm.cuda_available(), reason="CUDA is not available")
+def test_cifar10_loads_with_gpu_enabled(dataset_root):
+    """GPU を有効にしても CIFAR-10 を読み込める（pickle から読んだ numpy の配列が混ざらない）"""
+    with nm.cuda.gpu:
+        train_dataset = CIFAR10(root=dataset_root, train=True, download=True)
+        x, _ = train_dataset[0]
+        assert len(train_dataset) == 50000
+        assert type(getattr(x, "_data", x)).__module__.startswith("cupy")
