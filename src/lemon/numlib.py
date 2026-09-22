@@ -37,7 +37,7 @@ Key Features
 - Gradient computation control and device management
 """
 
-__version__ = "0.0.1"
+__version__ = "0.0.2"
 __author__ = "@remokasu"
 __email__ = "0w0.ebi.kaitai@gmail.com"
 __homepage__ = "https//github.com/remokasu/numlib"
@@ -1143,20 +1143,20 @@ class NumType:
         if not self.requires_grad:
             raise RuntimeError(f"{type(self).__name__} does not require gradients")
 
-        # トポロジカルソート
+        # トポロジカルソート（深いグラフで RecursionError にならないよう反復で行う）
         topo = []
-        visited = set()
-
-        def build_topo(v):
-            v_id = id(v)
-            if v_id not in visited:
-                visited.add(v_id)
-                if hasattr(v, "_prev"):
-                    for child in v._prev:
-                        build_topo(child)
+        visited = {id(self)}
+        stack = [(self, iter(getattr(self, "_prev", ())))]
+        while stack:
+            v, children = stack[-1]
+            for child in children:
+                if id(child) not in visited:
+                    visited.add(id(child))
+                    stack.append((child, iter(getattr(child, "_prev", ()))))
+                    break
+            else:
+                stack.pop()
                 topo.append(v)
-
-        build_topo(self)
 
         # 勾配の初期化
         if gradient is None:
