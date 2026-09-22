@@ -33,7 +33,7 @@ def softplus(x):
     softplus(x) = log(1 + exp(-|x|)) + max(x, 0)
     """
     # Numerical stability: avoid overflow for large x
-    return nm.log(1 + nm.exp(-nm.abs(x))) + nm.maximum(x, 0)
+    return nm.log(nm.ones_like(x) + nm.exp(-nm.abs(x))) + nm.maximum(x, 0)
 
 
 class Softplus(Module):

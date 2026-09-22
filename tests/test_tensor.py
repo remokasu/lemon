@@ -10,6 +10,7 @@ import unittest
 import numpy as np
 
 from lemon.numlib import *
+from lemon.numlib import TypeMismatchError, DimensionError
 
 
 class TestVector(unittest.TestCase):
@@ -279,13 +280,15 @@ class TestMatrix(unittest.TestCase):
         """Test matrix scalar operations"""
         m = matrix([[1.0, 2.0], [3.0, 4.0]])
 
-        # Multiplication
+        # Multiplication (scalar multiplication is defined)
         result = m * 2.0
         expected = np.array([[1.0, 2.0], [3.0, 4.0]]) * 2.0
         np.testing.assert_array_almost_equal(result._data, expected)
 
-        # Addition
-        result = m + 1.0
+        # Addition of a scalar is not defined; add c·1 explicitly
+        with self.assertRaises(TypeMismatchError):
+            m + 1.0
+        result = m + 1.0 * ones_like(m)
         expected = np.array([[1.0, 2.0], [3.0, 4.0]]) + 1.0
         np.testing.assert_array_almost_equal(result._data, expected)
 
@@ -296,13 +299,13 @@ class TestMatrix(unittest.TestCase):
         # Single element
         self.assertEqual(m[1, 1]._data, 5)
 
-        # Row slice
+        # Row slice -> row vector (e₀ᵀA)
         result = m[0, :]
-        np.testing.assert_array_equal(result._data, np.array([1, 2, 3]))
+        np.testing.assert_array_equal(result._data, np.array([[1, 2, 3]]))
 
-        # Column slice
+        # Column slice -> column vector (Ae₁)
         result = m[:, 1]
-        np.testing.assert_array_equal(result._data, np.array([2, 5, 8]))
+        np.testing.assert_array_equal(result._data, np.array([[2], [5], [8]]))
 
     def test_matrix_trace(self):
         """Test matrix trace"""
@@ -359,14 +362,14 @@ class TestMatrix(unittest.TestCase):
         expected_all = np.sum(np.array([[1, 2, 3], [4, 5, 6]]))
         self.assertAlmostEqual(result_all._data, expected_all, places=5)
 
-        # Sum along axis 0 (columns)
+        # Sum along axis 0 (columns) -> row vector 1ᵀA
         result_axis0 = m.sum(axis=0)
-        expected_axis0 = np.sum(np.array([[1, 2, 3], [4, 5, 6]]), axis=0)
+        expected_axis0 = np.sum(np.array([[1, 2, 3], [4, 5, 6]]), axis=0, keepdims=True)
         np.testing.assert_array_almost_equal(result_axis0._data, expected_axis0)
 
-        # Sum along axis 1 (rows)
+        # Sum along axis 1 (rows) -> column vector A1
         result_axis1 = m.sum(axis=1)
-        expected_axis1 = np.sum(np.array([[1, 2, 3], [4, 5, 6]]), axis=1)
+        expected_axis1 = np.sum(np.array([[1, 2, 3], [4, 5, 6]]), axis=1, keepdims=True)
         np.testing.assert_array_almost_equal(result_axis1._data, expected_axis1)
 
     def test_matrix_mean_operations(self):
@@ -380,7 +383,9 @@ class TestMatrix(unittest.TestCase):
 
         # Mean along axis 0
         result_axis0 = m.mean(axis=0)
-        expected_axis0 = np.mean(np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]), axis=0)
+        expected_axis0 = np.mean(
+            np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]), axis=0, keepdims=True
+        )
         np.testing.assert_array_almost_equal(result_axis0._data, expected_axis0)
 
     def test_matrix_mathematical_functions(self):
@@ -756,12 +761,13 @@ class TestIntegration(unittest.TestCase):
         self.assertIsInstance(result2, RowVector)
 
     def test_broadcasting_between_types(self):
-        """Test broadcasting between different types"""
+        """RowVector (1, 3) + Matrix (2, 3) is not defined; broadcast explicitly"""
         v = vector([1.0, 2.0, 3.0]).T
         m = matrix([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 
-        # Vector broadcast to matrix
-        result = m + v
+        with self.assertRaises(DimensionError):
+            m + v
+        result = m + broadcast_to(v, m.shape)
         expected = m._data + v._data
         np.testing.assert_array_almost_equal(result._data, expected)
 

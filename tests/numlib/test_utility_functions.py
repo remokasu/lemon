@@ -276,15 +276,17 @@ class TestHelperFunctions:
         result = nm._auto_convert(True)
         assert isinstance(result, nm.Boolean)
 
-    def test_auto_convert_list_to_vector(self):
-        """Test _auto_convert with 1D list"""
+    def test_auto_convert_list_to_tensor(self):
+        """Test _auto_convert with 1D list (stays (n,) Tensor, not Vector)"""
         result = nm._auto_convert([1, 2, 3])
-        assert isinstance(result, nm.Vector)
+        assert type(result) is nm.Tensor
+        assert result.shape == (3,)
 
-    def test_auto_convert_2d_list_to_matrix(self):
-        """Test _auto_convert with 2D list"""
+    def test_auto_convert_2d_list_to_tensor(self):
+        """Test _auto_convert with 2D list (implicit conversion never creates Matrix)"""
         result = nm._auto_convert([[1, 2], [3, 4]])
-        assert isinstance(result, nm.Matrix)
+        assert type(result) is nm.Tensor
+        assert result.shape == (2, 2)
 
     def test_auto_convert_numtype_returns_same(self):
         """Test _auto_convert with NumType returns same object"""
@@ -306,22 +308,22 @@ class TestHelperFunctions:
         assert result.ndim == 1
 
     def test_create_result_2d_column(self):
-        """Test _create_result with (n, 1) array creates Vector"""
+        """Test _create_result with (n, 1) array: Vector only for math inputs"""
         arr = np.array([[1], [2], [3]])
-        result = nm._create_result(arr)
-        assert isinstance(result, nm.Vector)
+        assert type(nm._create_result(arr)) is nm.Tensor
+        assert isinstance(nm._create_result(arr, math=True), nm.Vector)
 
     def test_create_result_2d_row(self):
-        """Test _create_result with (1, n) array creates RowVector"""
+        """Test _create_result with (1, n) array: RowVector only for math inputs"""
         arr = np.array([[1, 2, 3]])
-        result = nm._create_result(arr)
-        assert isinstance(result, nm.RowVector)
+        assert type(nm._create_result(arr)) is nm.Tensor
+        assert isinstance(nm._create_result(arr, math=True), nm.RowVector)
 
     def test_create_result_2d_matrix(self):
-        """Test _create_result with (m, n) array creates Matrix"""
+        """Test _create_result with (m, n) array: Matrix only for math inputs"""
         arr = np.array([[1, 2], [3, 4]])
-        result = nm._create_result(arr)
-        assert isinstance(result, nm.Matrix)
+        assert type(nm._create_result(arr)) is nm.Tensor
+        assert isinstance(nm._create_result(arr, math=True), nm.Matrix)
 
     def test_create_result_3d(self):
         """Test _create_result with 3D array creates Tensor"""

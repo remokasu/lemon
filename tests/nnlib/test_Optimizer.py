@@ -29,7 +29,7 @@ def test_sgd_optimizer():
     # Forward
     x = nm.tensor([[1.0, 1.0]])
     y_true = nm.tensor([[2.0, 3.0]])
-    y_pred = x @ W.data + b.data
+    y_pred = x @ W.data + nm.broadcast_to(b.data, (x.shape[0], W.data.shape[1]))
     loss = nl.mean_squared_error(y_pred, y_true)
 
     # Backward
@@ -139,7 +139,7 @@ def test_adam_optimizer():
     # Forward
     x = nm.tensor([[1.0, 1.0]])
     y_true = nm.tensor([[2.0, 3.0]])
-    y_pred = x @ W.data + b.data
+    y_pred = x @ W.data + nm.broadcast_to(b.data, (x.shape[0], W.data.shape[1]))
     loss = nl.mean_squared_error(y_pred, y_true)
 
     # Backward

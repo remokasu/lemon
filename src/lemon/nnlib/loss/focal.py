@@ -32,9 +32,10 @@ def focal_loss(y_pred, y_true, gamma=2.0, alpha=0.25, reduction="mean"):
         Loss value
     """
     eps = 1e-10
-    p_t = y_true * y_pred + (1 - y_true) * (1 - y_pred)
-    alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
-    loss = -alpha_t * (1 - p_t) ** gamma * nm.log(p_t + eps)
+    one = nm.ones_like(y_pred)
+    p_t = y_true * y_pred + (one - y_true) * (one - y_pred)
+    alpha_t = alpha * y_true + (1 - alpha) * (one - y_true)
+    loss = -alpha_t * (one - p_t) ** gamma * nm.log(p_t + eps * one)
 
     if reduction == "mean":
         return nm.mean(loss)

@@ -18,6 +18,7 @@ if parent_dir not in sys.path:
 
 import numpy as np
 from lemon.numlib import *
+from lemon.numlib import TypeMismatchError, DimensionError
 import pytest
 
 
@@ -181,15 +182,18 @@ class TestBasicOperations:
         assert np.allclose(result._data, expected)
 
     def test_broadcasting(self):
-        """ブロードキャスティング"""
+        """ブロードキャスティングは暗黙には行わない（明示すれば同じ結果）"""
         m = matrix([[1, 2], [3, 4]])
         v = vector([10, 20])
 
-        # Matrix + Vector (ブロードキャスト)
-        result = m + v
+        # Matrix (2, 2) + Vector (2, 1) は定義されない
+        with pytest.raises(DimensionError):
+            m + v
+        result = m + broadcast_to(v, m.shape)
         expected = np.array([[11, 12], [23, 24]])
 
         assert np.allclose(result._data, expected)
+
 
 
 # =============================================================================
@@ -346,14 +350,16 @@ class TestAdvancedTensorOperations:
 
         # 軸方向の和
         col_sum = m.sum(axis=0)
-        # ✅ 修正: keepdims=False なので (3,)
-        assert col_sum.shape == (3,)
-        assert np.allclose(col_sum._data, [5, 7, 9])
+        # Matrix は向きを保つ: 列ごとの和 1ᵀA は行ベクトル
+        assert isinstance(col_sum, RowVector)
+        assert col_sum.shape == (1, 3)
+        assert np.allclose(col_sum._data, [[5, 7, 9]])
 
         row_sum = m.sum(axis=1)
-        # ✅ 修正: keepdims=False なので (2,)
-        assert row_sum.shape == (2,)
-        assert np.allclose(row_sum._data, [6, 15])
+        # 行ごとの和 A1 は列ベクトル
+        assert isinstance(row_sum, Vector)
+        assert row_sum.shape == (2, 1)
+        assert np.allclose(row_sum._data, [[6], [15]])
 
         # keepdims=True のテスト
         col_sum_keep = m.sum(axis=0, keepdims=True)
@@ -374,14 +380,14 @@ class TestAdvancedTensorOperations:
 
         # 軸方向の平均
         col_avg = m.mean(axis=0)
-        # ✅ 修正: (3,) になる
-        assert col_avg.shape == (3,)
-        assert np.allclose(col_avg._data, [5, 7, 9])
+        # Matrix は向きを保つ: 行ベクトル (1, 3)
+        assert col_avg.shape == (1, 3)
+        assert np.allclose(col_avg._data, [[5, 7, 9]])
 
         row_avg = m.mean(axis=1)
-        # ✅ 修正: (2,) になる
-        assert row_avg.shape == (2,)
-        assert np.allclose(row_avg._data, [4, 10])
+        # 列ベクトル (2, 1)
+        assert row_avg.shape == (2, 1)
+        assert np.allclose(row_avg._data, [[4], [10]])
 
     def test_indexing_vector(self):
         """Vectorのインデックス"""
@@ -389,8 +395,8 @@ class TestAdvancedTensorOperations:
 
         # 単一要素
         elem = v[2]
-        # ✅ 修正: (1,) になる（0次元ではない）
-        assert elem.ndim == 1 or elem.ndim == 2
+        # ベクトルの成分 v₂ はスカラー
+        assert isinstance(elem, Scalar)
         assert np.isclose(elem._data.item(), 30)
 
         # スライス
@@ -408,11 +414,12 @@ class TestAdvancedTensorOperations:
 
         # 行の取得
         row = m[1]
-        # ✅ 修正: (3,) になる（NumPy互換）
-        assert row.shape == (3,)
-        assert np.allclose(row._data, [4, 5, 6])
+        # 行は行ベクトル e₁ᵀA
+        assert isinstance(row, RowVector)
+        assert row.shape == (1, 3)
+        assert np.allclose(row._data, [[4, 5, 6]])
 
-        # keepdims=True の動作を期待する場合は m[1:2] を使う
+        # スライスでも同じ行ベクトル
         row_keep = m[1:2]
         assert row_keep.shape == (1, 3)
         assert isinstance(row_keep, RowVector)

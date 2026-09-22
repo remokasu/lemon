@@ -31,7 +31,7 @@ def hard_sigmoid(x, alpha=0.2, beta=0.5):
     >>> y = hard_sigmoid(x)
     >>> # y = [0.0, 0.5, 1.0]
     """
-    return nm.maximum(0.0, nm.minimum(1.0, alpha * x + beta))
+    return nm.maximum(0.0, nm.minimum(1.0, alpha * x + beta * nm.ones_like(x)))
 
 
 class HardSigmoid(Module):

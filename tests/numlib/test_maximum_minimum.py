@@ -36,10 +36,12 @@ class TestMaximum:
         np.testing.assert_array_equal(z.data, expected)
 
     def test_maximum_broadcasting(self):
-        """ブロードキャスティング"""
+        """形が違う配列どうしは暗黙にブロードキャストしない（明示すれば同じ結果）"""
         x = nm.tensor([[1, 2], [3, 4]])
         y = nm.tensor([2, 3])
-        z = nm.maximum(x, y)
+        with pytest.raises(nm.DimensionError):
+            nm.maximum(x, y)
+        z = nm.maximum(x, nm.broadcast_to(y, x.shape))
 
         expected = np.array([[2, 3], [3, 4]])
         np.testing.assert_array_equal(z.data, expected)
@@ -118,10 +120,12 @@ class TestMinimum:
         np.testing.assert_array_equal(z.data, expected)
 
     def test_minimum_broadcasting(self):
-        """ブロードキャスティング"""
+        """形が違う配列どうしは暗黙にブロードキャストしない（明示すれば同じ結果）"""
         x = nm.tensor([[1, 2], [3, 4]])
         y = nm.tensor([2, 3])
-        z = nm.minimum(x, y)
+        with pytest.raises(nm.DimensionError):
+            nm.minimum(x, y)
+        z = nm.minimum(x, nm.broadcast_to(y, x.shape))
 
         expected = np.array([[1, 2], [2, 3]])
         np.testing.assert_array_equal(z.data, expected)

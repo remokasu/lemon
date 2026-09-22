@@ -7,6 +7,8 @@ if parent_dir not in sys.path:
 
 
 from lemon.numlib import *
+from lemon.numlib import TypeMismatchError
+import pytest
 
 import numpy as np
 
@@ -252,12 +254,15 @@ def test_Matrix():
     assert (m1 + m2 == Matrix([[2, 4], [6, 8]])).all()
     assert (m1 + [[1, 2], [3, 4]] == Matrix([[2, 4], [6, 8]])).all()
     assert ([[1, 2], [3, 4]] + m1 == Matrix([[2, 4], [6, 8]])).all()
-    assert (m1 + 1 == Matrix([[2, 3], [4, 5]])).all()
-    assert (1 + m1 == Matrix([[2, 3], [4, 5]])).all()
-    assert (m1 + 1.0 == Matrix([[2.0, 3.0], [4.0, 5.0]])).all()
-    assert (1.0 + m1 == Matrix([[2.0, 3.0], [4.0, 5.0]])).all()
-    assert (m1 + 1 + 1.0 == Matrix([[3.0, 4.0], [5.0, 6.0]])).all()
-    assert (1.0 + 1 + m1 == Matrix([[3.0, 4.0], [5.0, 6.0]])).all()
+    # 行列 + スカラーは定義されない（c·1 を明示する）
+    for undefined in (lambda: m1 + 1, lambda: 1 + m1, lambda: m1 + 1.0, lambda: 1.0 + m1):
+        with pytest.raises(TypeMismatchError):
+            undefined()
+    one = ones_like(m1)
+    assert (m1 + 1 * one == Matrix([[2, 3], [4, 5]])).all()
+    assert (1 * one + m1 == Matrix([[2, 3], [4, 5]])).all()
+    assert (m1 + 1.0 * one == Matrix([[2.0, 3.0], [4.0, 5.0]])).all()
+    assert (m1 + 1 * one + 1.0 * one == Matrix([[3.0, 4.0], [5.0, 6.0]])).all()
     # *
     assert (m1 * m2 == Matrix([[1, 4], [9, 16]])).all()
     assert (m1 * [[1, 2], [3, 4]] == Matrix([[1, 4], [9, 16]])).all()
@@ -282,10 +287,13 @@ def test_Matrix():
     assert (m1 - m2 == Matrix([[0, 0], [0, 0]])).all()
     assert (m1 - [[1, 2], [3, 4]] == Matrix([[0, 0], [0, 0]])).all()
     assert ([[1, 2], [3, 4]] - m1 == Matrix([[0, 0], [0, 0]])).all()
-    assert (m1 - 1 == Matrix([[0, 1], [2, 3]])).all()
-    assert (1 - m1 == Matrix([[0, -1], [-2, -3]])).all()
-    assert (m1 - 1.0 == Matrix([[0.0, 1.0], [2.0, 3.0]])).all()
-    assert (1.0 - m1 == Matrix([[0.0, -1.0], [-2.0, -3.0]])).all()
+    for undefined in (lambda: m1 - 1, lambda: 1 - m1, lambda: m1 - 1.0, lambda: 1.0 - m1):
+        with pytest.raises(TypeMismatchError):
+            undefined()
+    assert (m1 - 1 * one == Matrix([[0, 1], [2, 3]])).all()
+    assert (1 * one - m1 == Matrix([[0, -1], [-2, -3]])).all()
+    assert (m1 - 1.0 * one == Matrix([[0.0, 1.0], [2.0, 3.0]])).all()
+    assert (1.0 * one - m1 == Matrix([[0.0, -1.0], [-2.0, -3.0]])).all()
     # /
     assert (m1 / m2 == Matrix([[1, 1], [1, 1]])).all()
     assert (m1 / [[1, 2], [3, 4]] == Matrix([[1, 1], [1, 1]])).all()

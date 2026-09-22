@@ -23,7 +23,7 @@ def elu(x, alpha=1.0):
     Tensor
         Output tensor
     """
-    return nm.where(x > 0, x, alpha * (nm.exp(x) - 1))
+    return nm.where(x > 0, x, alpha * (nm.exp(x) - nm.ones_like(x)))
 
 
 class Elu(Module):

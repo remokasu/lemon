@@ -44,6 +44,9 @@ def prelu(x, weight):
     else:
         slope = weight
 
+    if slope.shape != () and slope.shape != x.shape:
+        # チャンネルごとの傾きを、x の形に明示的に広げる
+        slope = nm.broadcast_to(slope, x.shape)
     return nm.where(x >= 0, x, slope * x)
 
 

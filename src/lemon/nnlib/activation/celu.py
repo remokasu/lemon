@@ -28,7 +28,8 @@ def celu(x, alpha=1.0):
     >>> x = nm.tensor([-1.0, 0.0, 1.0])
     >>> y = celu(x)
     """
-    return nm.maximum(0.0, x) + nm.minimum(0.0, alpha * (nm.exp(x / alpha) - 1))
+    one = nm.ones_like(x)
+    return nm.maximum(0.0, x) + nm.minimum(0.0, alpha * (nm.exp(x / alpha) - one))
 
 
 class Celu(Module):

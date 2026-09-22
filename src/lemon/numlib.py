@@ -40,7 +40,7 @@ Key Features
 __version__ = "0.0.2"
 __author__ = "@remokasu"
 __email__ = "0w0.ebi.kaitai@gmail.com"
-__homepage__ = "https//github.com/remokasu/numlib"
+__homepage__ = "https://github.com/remokasu/numlib"
 __license__ = "MIT"
 
 import threading
@@ -378,7 +378,7 @@ autograd = AutogradNamespace()
 # ==============================
 
 
-def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
+def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True, kind="map", name="operation"):
     """
     二項演算のファクトリ関数
 
@@ -394,6 +394,10 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
         y の勾配計算
     save_data : bool, optional
         x._data, y._data を保存するか (デフォルト: True)
+    kind : {"add", "mul", "div", "map"}, optional
+        数学的に定義される組み合わせの種類（_check_elementwise を参照）
+    name : str, optional
+        エラーメッセージに出す演算の名前
 
     Returns
     -------
@@ -410,26 +414,27 @@ def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True):
     """
 
     def binary_op(x, y):
-        # 型変換
-        if not isinstance(x, NumType):
-            x = _auto_convert(x, requires_grad=False)
-        if not isinstance(y, NumType):
-            y = _auto_convert(y, requires_grad=False)
+        # 型変換（リテラルは、形がまったく同じなら相手と同じ空間の元として読む）
+        x, y = _convert_operands(x, y)
+
+        # 数学的に定義されない組み合わせ（暗黙のブロードキャストなど）はエラー
+        _check_elementwise(kind, name, x, y)
 
         # 計算
         result_data = forward_fn(x._data, y._data)
+        math = _is_math(x, y)
 
         # 勾配追跡の早期判定
         x_req = x.requires_grad
         y_req = y.requires_grad
 
         if not (autograd.is_enabled() and (x_req or y_req)):
-            result = _create_result(result_data)
+            result = _create_result(result_data, math=math)
             result.requires_grad = False
             return result
 
         # 勾配が必要な場合
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=math)
         result.requires_grad = True
 
         # _prev を構築
@@ -524,11 +529,11 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
 
     def unary_op(x):
         if not isinstance(x, NumType):
-            x = _auto_convert(x)
+            x = _auto_convert(x, requires_grad=False)
 
         xp = get_array_module(x._data)
         result_data = forward_fn(xp, x._data)
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
 
         # 早期リターン
         if not (autograd.is_enabled() and x.requires_grad):
@@ -566,6 +571,91 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
     return unary_op
 
 
+def make_op(forward, backward):
+    """
+    順伝播と逆伝播から、自動微分できる演算を作る（公開 API）
+
+    演算を作る側は、生の配列（numpy / cupy）で順伝播と勾配の式だけを書く。
+    入力の変換、勾配を追跡するかの判定、計算グラフの構築、勾配の形のチェック、
+    勾配の累積は、ここで1か所にまとめて行う。
+
+    Parameters
+    ----------
+    forward : callable(*arrays, **params) -> (result_array, ctx)
+        順伝播。位置引数は入力の配列（入力が None ならそのまま None）。
+        キーワード引数は、微分しないパラメータ（stride や eps など）。
+        結果の配列と、逆伝播で使う値 ctx（何でもよい）のタプルを返す。
+    backward : callable(ctx, grad, needs_grad) -> tuple
+        逆伝播。grad は出力についての勾配の配列、needs_grad は入力ごとに
+        勾配が必要かどうかの bool のタプル。入力ごとの勾配の配列を、入力と同じ
+        順番のタプルで返す。勾配が要らない入力には None を返してよい。
+
+    Returns
+    -------
+    callable(*inputs, **params) -> NumType
+        位置引数に入力（NumType、配列、None）、キーワード引数にパラメータを取る演算。
+        NumType でない入力は定数として扱う（勾配を追跡しない）。
+
+    Examples
+    --------
+    >>> def _forward(x):
+    ...     y = x * x
+    ...     return y, x
+    >>> def _backward(x, grad, needs_grad):
+    ...     return (grad * 2 * x,)
+    >>> square = nm.make_op(_forward, _backward)
+    >>> x = nm.tensor([1.0, 2.0], requires_grad=True)
+    >>> nm.sum(square(x)).backward()
+    >>> x.grad  # [2.0, 4.0]
+    """
+
+    def op(*inputs, **params):
+        xs = tuple(
+            None
+            if a is None
+            else (a if isinstance(a, NumType) else _auto_convert(a, requires_grad=False))
+            for a in inputs
+        )
+        result_data, ctx = forward(*(None if a is None else a._data for a in xs), **params)
+        result = _create_result(
+            result_data, math=_is_math(*(a for a in xs if a is not None))
+        )
+
+        needs_grad = tuple(a is not None and a.requires_grad for a in xs)
+        if not (autograd.is_enabled() and builtins.any(needs_grad)):
+            result.requires_grad = False
+            return result
+
+        result.requires_grad = True
+        result._prev = tuple(a for a, n in zip(xs, needs_grad) if n)
+
+        def _backward():
+            if result.grad is None:
+                return
+            grads = backward(ctx, result.grad._data, needs_grad)
+            if len(grads) != len(xs):
+                raise GradientError(
+                    f"backward returned {len(grads)} gradients for {len(xs)} inputs"
+                )
+            for a, need, g in zip(xs, needs_grad, grads):
+                if not need or g is None:
+                    continue
+                if g.shape != a.shape:
+                    raise GradientError(
+                        f"gradient shape {g.shape} does not match input shape {a.shape}"
+                    )
+                # 勾配の配列は read-only の view のこともあるので、+= ではなく新しい配列を作る
+                if a.grad is None:
+                    a.grad = _create_result(g)
+                else:
+                    a.grad._data = a.grad._data + g
+
+        result._backward = _backward
+        return result
+
+    return op
+
+
 # ==============================
 # Factory-Created Operations
 # ==============================
@@ -581,6 +671,8 @@ add = _make_binary_op(
     forward_fn=lambda x, y: x + y,
     grad_x_fn=lambda g, x, y, r: g,
     grad_y_fn=lambda g, x, y, r: g,
+    kind="add",
+    name="addition",
 )
 
 
@@ -588,6 +680,8 @@ sub = _make_binary_op(
     forward_fn=lambda x, y: x - y,
     grad_x_fn=lambda g, x, y, r: g,
     grad_y_fn=lambda g, x, y, r: -g,
+    kind="add",
+    name="subtraction",
 )
 
 
@@ -595,6 +689,8 @@ mul = _make_binary_op(
     forward_fn=lambda x, y: x * y,
     grad_x_fn=lambda g, x, y, r: g * y,
     grad_y_fn=lambda g, x, y, r: g * x,
+    kind="mul",
+    name="multiplication",
 )
 
 
@@ -602,6 +698,8 @@ div = _make_binary_op(
     forward_fn=lambda x, y: x / y,
     grad_x_fn=lambda g, x, y, r: g / y,
     grad_y_fn=lambda g, x, y, r: -g * x / (y * y),
+    kind="div",
+    name="division",
 )
 
 
@@ -805,6 +903,8 @@ maximum = _make_binary_op(
     grad_x_fn=_maximum_grad_x,
     grad_y_fn=_maximum_grad_y,
     save_data=True,
+    kind="map",
+    name="maximum",
 )
 
 
@@ -832,6 +932,8 @@ minimum = _make_binary_op(
     grad_x_fn=_minimum_grad_x,
     grad_y_fn=_minimum_grad_y,
     save_data=True,
+    kind="map",
+    name="minimum",
 )
 
 
@@ -867,6 +969,8 @@ atan2 = _make_binary_op(
     grad_x_fn=_atan2_grad_y,  # Note: x in _make_binary_op corresponds to first arg (y)
     grad_y_fn=_atan2_grad_x,  # Note: y in _make_binary_op corresponds to second arg (x)
     save_data=True,
+    kind="map",
+    name="atan2",
 )
 
 
@@ -1091,7 +1195,8 @@ def ones_like(x):
         Tensor filled with ones, matching the shape and type of x
     """
     xp = get_array_module(x._data)
-    return type(x)(xp.ones_like(x._data))
+    # 定数なので勾配は追跡しない
+    return type(x)(xp.ones_like(x._data), requires_grad=False)
 
 
 def zeros_like(x):
@@ -1109,7 +1214,8 @@ def zeros_like(x):
         Tensor filled with zeros, matching the shape and type of x
     """
     xp = get_array_module(x._data)
-    return type(x)(xp.zeros_like(x._data))
+    # 定数なので勾配は追跡しない
+    return type(x)(xp.zeros_like(x._data), requires_grad=False)
 
 
 class NumType:
@@ -1177,6 +1283,19 @@ class NumType:
         # 逆順に逆伝播
         for node in reversed(topo):
             node._backward()
+
+        # 勾配は変数と同じ空間の元なので、数学の型の変数には同じ型の勾配を持たせる
+        for node in topo:
+            g = node.grad
+            if (
+                g is not None
+                and isinstance(node, _MATRIX_TYPES)
+                and type(g) is not type(node)
+                and g.shape == node.shape
+            ):
+                node.grad = _create_result(
+                    g._data, requires_grad=g.requires_grad, math=True
+                )
 
         # retain_graph=Falseの場合、計算グラフを解放
         if not retain_graph:
@@ -1286,16 +1405,10 @@ class NumType:
 
         This is called when a NumPy ufunc is applied to this object.
         """
-        # Return appropriate type based on result dimensions
-        ndim = result.ndim
-        if ndim == 0:
-            return _auto_scalar(result)
-        elif ndim == 1:
-            return Vector(result)
-        elif ndim == 2:
-            return Matrix(result)
-        else:
-            return Tensor(result)
+        # 微分しない NumPy の関数の結果を包む。形は変えず、数学の型は self が数学の型のときだけ
+        if not isinstance(result, (np.ndarray, (cp.ndarray if cp else type(None)))):
+            result = get_array_module(self._data).asarray(result)
+        return _create_result(result, requires_grad=False, math=_is_math(self))
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
         """
@@ -1307,13 +1420,17 @@ class NumType:
         if method == "__call__":
             # Map NumPy ufuncs to our differentiable functions
             ufunc_map = {
-                np.add: lambda x, y: x + y,
-                np.subtract: lambda x, y: x - y,
-                np.multiply: lambda x, y: x * y,
-                np.divide: lambda x, y: x / y,
-                np.power: lambda x, y: x**y,
-                np.negative: lambda x: -x,
-                np.absolute: lambda x: abs(x),
+                np.add: add,
+                np.subtract: sub,
+                np.multiply: mul,
+                np.divide: div,
+                np.power: pow,
+                np.matmul: matmul,
+                np.maximum: maximum,
+                np.minimum: minimum,
+                np.arctan2: atan2,
+                np.negative: neg,
+                np.absolute: absolute,
                 np.exp: exp,
                 np.log: log,
                 np.log2: log2,
@@ -1334,15 +1451,10 @@ class NumType:
             }
 
             if ufunc in ufunc_map:
-                # Use our differentiable version
+                # Use our differentiable version（NumType でない入力の変換は、演算の側で
+                # 定数として行う）
                 func = ufunc_map[ufunc]
-                args = []
-                for inp in inputs:
-                    if isinstance(inp, NumType):
-                        args.append(inp)
-                    else:
-                        args.append(_auto_convert(inp))
-                return func(*args)
+                return func(*inputs)
             else:
                 # Fall back to NumPy
                 arrays = []
@@ -1787,7 +1899,7 @@ class Tensor(NumType):
         """Squeeze (NumPy compatible)"""
         xp = get_array_module(self._data)
         result = xp.squeeze(self._data, axis=axis)
-        return _create_result(result)
+        return _create_result(result, math=_is_math(self))
 
     def copy(self, order="C"):
         """Copy (NumPy compatible)"""
@@ -1813,32 +1925,36 @@ class Tensor(NumType):
     def max(self, axis=None, keepdims=False, out=None, **kwargs):
         """Maximum (NumPy compatible)"""
         xp = get_array_module(self._data)
+        axis, keepdims = _math_reduce_args(self, axis, keepdims)
         result = xp.max(self._data, axis=axis, keepdims=keepdims)
         if isinstance(result, (np.ndarray, (cp.ndarray if cp else type(None)))):
-            return _create_result(result)
+            return _create_result(result, math=_is_math(self))
         return _auto_scalar(result)
 
     def min(self, axis=None, keepdims=False, out=None, **kwargs):
         """Minimum (NumPy compatible)"""
         xp = get_array_module(self._data)
+        axis, keepdims = _math_reduce_args(self, axis, keepdims)
         result = xp.min(self._data, axis=axis, keepdims=keepdims)
         if isinstance(result, (np.ndarray, (cp.ndarray if cp else type(None)))):
-            return _create_result(result)
+            return _create_result(result, math=_is_math(self))
         return _auto_scalar(result)
 
     def all(self, axis=None, keepdims=False):
         """Logical AND reduction"""
+        axis, keepdims = _math_reduce_args(self, axis, keepdims)
         result = self._data.all(axis=axis, keepdims=keepdims)
         if isinstance(result, (bool, np.bool_)):
             return bool(result)
-        return _create_result(result) if result.ndim > 0 else bool(result)
+        return _create_result(result, math=_is_math(self)) if result.ndim > 0 else bool(result)
 
     def any(self, axis=None, keepdims=False):
         """Logical OR reduction"""
+        axis, keepdims = _math_reduce_args(self, axis, keepdims)
         result = self._data.any(axis=axis, keepdims=keepdims)
         if isinstance(result, (bool, np.bool_)):
             return bool(result)
-        return _create_result(result) if result.ndim > 0 else bool(result)
+        return _create_result(result, math=_is_math(self)) if result.ndim > 0 else bool(result)
 
     def argmax(self, axis=None, out=None, **kwargs):
         """Argmax (NumPy compatible)"""
@@ -1868,13 +1984,13 @@ class Tensor(NumType):
         """Clip values (NumPy compatible)"""
         xp = get_array_module(self._data)
         result = xp.clip(self._data, min, max)
-        return _create_result(result)
+        return _create_result(result, math=_is_math(self))
 
     def round(self, decimals=0, out=None):
         """Round (NumPy compatible)"""
         xp = get_array_module(self._data)
         result = xp.round(self._data, decimals)
-        return _create_result(result)
+        return _create_result(result, math=_is_math(self))
 
     # Placeholder for future implementation
     def std(self, axis=None, keepdims=False, ddof=0, dtype=None, out=None, **kwargs):
@@ -2930,11 +3046,10 @@ def _auto_convert(data: Any, requires_grad: bool = None) -> NumType:
         # 次元に応じて分岐（最も高速）
         if ndim == 0:
             return _auto_scalar(data, requires_grad=requires_grad)
-        elif ndim == 1:
-            return Vector(data, requires_grad=requires_grad)
-        elif ndim == 2:
-            return Matrix(data, requires_grad=requires_grad)
         else:
+            # 暗黙の変換では数学の型（Vector / Matrix）にしない。形も変えない。
+            # 1次元を Vector (n, 1) にすると、Tensor (n,) との演算が
+            # (n, n) にブロードキャストされてしまう
             return Tensor(data, requires_grad=requires_grad)
 
     # 【中速パス】NumPyスカラー型
@@ -2954,10 +3069,6 @@ def _auto_convert(data: Any, requires_grad: bool = None) -> NumType:
 
         if ndim == 0:
             return _auto_scalar(arr, requires_grad=requires_grad)
-        elif ndim == 1:
-            return Vector(arr, requires_grad=requires_grad)
-        elif ndim == 2:
-            return Matrix(arr, requires_grad=requires_grad)
         else:
             return Tensor(arr, requires_grad=requires_grad)
 
@@ -2971,31 +3082,28 @@ def _auto_convert(data: Any, requires_grad: bool = None) -> NumType:
 
     if ndim == 0:
         return _auto_scalar(arr, requires_grad=requires_grad)
-    elif ndim == 1:
-        return Vector(arr, requires_grad=requires_grad)
-    elif ndim == 2:
-        return Matrix(arr, requires_grad=requires_grad)
     else:
         return Tensor(arr, requires_grad=requires_grad)
 
 
-def _create_result(data: ArrayType, requires_grad: bool = True) -> NumType:
+def _create_result(
+    data: ArrayType, requires_grad: bool = True, math: bool = False
+) -> NumType:
     """
     超高速版: オブジェクト生成を最小限に（RowVector対応版）
 
     ルール:
     - 0次元 → Scalar（自動判定）
-    - 1次元 → Tensor
-    - 2次元:
-      - (n, 1) → Vector（列ベクトル）
-      - (1, n) → RowVector（行ベクトル）✅ 追加
+    - 2次元 かつ math=True（入力がすべて数学の型）:
+      - (n, 1) → Vector（列ベクトル。n×1 行列は列ベクトルそのもの）
+      - (1, n) → RowVector（行ベクトル）
       - (n, m) → Matrix
-    - 3次元以上 → Tensor
+    - それ以外 → Tensor（Tensor の演算結果に、形だけで数学の型をつけない）
     """
     ndim = data.ndim
 
-    # 最も頻繁なケース: 2次元（Matrix/Vector/RowVector）
-    if ndim == 2:
+    # 数学の型どうしの演算: 2次元は形で Matrix/Vector/RowVector に決める
+    if ndim == 2 and math:
         rows, cols = data.shape
 
         # (n, 1) → Vector（列ベクトル）
@@ -3016,22 +3124,11 @@ def _create_result(data: ArrayType, requires_grad: bool = True) -> NumType:
         result._backward = lambda: None
         return result
 
-    # 次に頻繁: 1次元 → Tensor
-    if ndim == 1:
-        result = object.__new__(Tensor)
-        result._data = data
-        result.name = None
-        result.grad = None
-        result.requires_grad = autograd.is_enabled() and requires_grad
-        result._prev = set()
-        result._backward = lambda: None
-        return result
-
     # 0次元（スカラー）
     if ndim == 0:
         return _auto_scalar(data, requires_grad=autograd.is_enabled() and requires_grad)
 
-    # 3次元以上 → Tensor
+    # それ以外 → Tensor
     result = object.__new__(Tensor)
     result._data = data
     result.name = None
@@ -3040,6 +3137,175 @@ def _create_result(data: ArrayType, requires_grad: bool = True) -> NumType:
     result._prev = set()
     result._backward = lambda: None
     return result
+
+
+# 数学の型（明示したときだけ使う型）
+_MATRIX_TYPES = (Vector, RowVector, Matrix)
+_MATH_TYPES = (Vector, RowVector, Matrix, Scalar)
+_PY_SCALAR_TYPES = (bool, int, float, complex, np.number)
+
+
+def _is_math(*xs) -> bool:
+    """入力がすべて数学の型かスカラーの数値なら True（Tensor が1つでも混ざれば False）"""
+    for x in xs:
+        if isinstance(x, NumType):
+            if not isinstance(x, _MATH_TYPES):
+                return False
+        elif not isinstance(x, _PY_SCALAR_TYPES):
+            return False
+    return True
+
+
+
+def _is_scalar_operand(x) -> bool:
+    """スカラー（0次元）の値か"""
+    return isinstance(x, NumType) and x._data.ndim == 0
+
+
+def _operand_name(x) -> str:
+    return f"{type(x).__name__}{list(x.shape)}"
+
+
+def _check_elementwise(kind, name, x, y):
+    """
+    要素ごとの二項演算が数学的に定義されるかを調べ、定義されなければ例外を出す
+
+    形が (n₁, …, n_k) の Tensor は ℝ^(n₁×…×n_k) の元、Vector / RowVector / Matrix は
+    行列の空間の元として扱う。和は同じ空間の元どうしでしか定義されない。
+
+    kind:
+      "add": 和・差。スカラーどうしか、同じ空間の元どうしだけ
+      "mul": 積。スカラー倍か、同じ空間の元どうし（アダマール積）
+      "div": 商。x / c（スカラー倍）、c / x（成分ごとの逆数のスカラー倍）、同じ空間の元どうし
+      "map": 成分ごとの関数（maximum, atan2, べき乗など）。スカラーはどちら側でもよい
+    """
+    x_scalar = _is_scalar_operand(x)
+    y_scalar = _is_scalar_operand(y)
+    if x_scalar and y_scalar:
+        return
+    if x_scalar or y_scalar:
+        if kind == "add":
+            raise TypeMismatchError(
+                name,
+                _operand_name(x),
+                _operand_name(y),
+                hint=(
+                    "Adding a scalar to a vector, matrix or tensor is not defined. "
+                    "To add c to every component, write c * nm.ones_like(x)"
+                ),
+            )
+        return
+
+    # どちらもスカラーでない: 同じ空間の元どうしだけ
+    if isinstance(x, _MATRIX_TYPES) != isinstance(y, _MATRIX_TYPES):
+        raise TypeMismatchError(
+            name,
+            _operand_name(x),
+            _operand_name(y),
+            hint=(
+                "Tensor and Vector / RowVector / Matrix belong to different spaces. "
+                "Convert explicitly, e.g. nm.vector(t) or nm.tensor(v)"
+            ),
+        )
+    if x.shape != y.shape:
+        raise DimensionError(
+            name,
+            x.shape,
+            y.shape,
+            left_type=_operand_name(x),
+            right_type=_operand_name(y),
+            hint=(
+                "Element-wise operations need identical shapes. "
+                "Broadcast explicitly, e.g. nm.broadcast_to(y, x.shape)"
+            ),
+        )
+
+
+def _convert_operands(x, y):
+    """
+    二項演算の入力を NumType にする。NumType でない入力（リテラル）は定数として変換し、
+    形がまったく同じなら相手と同じ空間の元として読む
+    """
+    x_literal = not isinstance(x, NumType)
+    y_literal = not isinstance(y, NumType)
+    if x_literal:
+        x = _auto_convert(x, requires_grad=False)
+    if y_literal:
+        y = _auto_convert(y, requires_grad=False)
+    if x_literal and not y_literal:
+        x = _literal_in_space_of(x, y)
+    elif y_literal and not x_literal:
+        y = _literal_in_space_of(y, x)
+    return x, y
+
+
+def _literal_in_space_of(literal, other):
+    """
+    リテラル（ndarray や list を変換した Tensor）を、形がまったく同じときだけ
+    相手（Vector / RowVector / Matrix）と同じ空間の元として読む。形は変えない。
+    """
+    if (
+        isinstance(other, _MATRIX_TYPES)
+        and type(literal) is Tensor
+        and literal.shape == other.shape
+    ):
+        return _create_result(literal._data, requires_grad=False, math=True)
+    return literal
+
+def _math_reduce_args(x, axis, keepdims):
+    """
+    数学の型を軸に沿って縮約するときの axis と keepdims を返す
+
+    向きを保つ: 列ごとの和 1ᵀA は行ベクトル、行ごとの和 A1 は列ベクトル。
+    結果が 1×1 になる縮約（ベクトルの成分の和など）はスカラーにする。
+    """
+    if axis is None or not isinstance(x, _MATRIX_TYPES):
+        return axis, keepdims
+    axes = axis if isinstance(axis, tuple) else (axis,)
+    axes = tuple(a % x.ndim for a in axes)
+    kept_shape = tuple(1 if i in axes else s for i, s in enumerate(x.shape))
+    if builtins.all(s == 1 for s in kept_shape):
+        return None, False
+    return axis, True
+
+
+def _math_key(x, key):
+    """
+    数学の型のインデックスで向きを保つための key を返す
+
+    - v[i]（Vector / RowVector）→ i 番目の成分（スカラー）
+    - A[i] / A[i, :] → i 行目（行ベクトル eᵢᵀA）
+    - A[:, j] → j 列目（列ベクトル Aeⱼ）
+    整数とスライス以外を含む key（配列によるインデックスなど）はそのまま返す。
+    """
+    if not isinstance(x, _MATRIX_TYPES):
+        return key
+    k = key if isinstance(key, tuple) else (key,)
+    if len(k) > 2 or not builtins.all(
+        isinstance(e, (int, np.integer, slice)) and not isinstance(e, bool) for e in k
+    ):
+        return key
+
+    def keep(e):
+        # 整数 i を、次元を残すスライス i:i+1 に置き換える
+        if isinstance(e, slice):
+            return e
+        i = int(e)
+        return slice(i, i + 1 if i != -1 else None)
+
+    if len(k) == 1:
+        if isinstance(x, Vector):
+            k = (k[0], 0) if not isinstance(k[0], slice) else (k[0], slice(None))
+        elif isinstance(x, RowVector):
+            k = (0, k[0]) if not isinstance(k[0], slice) else (slice(None), k[0])
+        else:
+            k = (k[0], slice(None))
+
+    row, col = k
+    if isinstance(row, slice) == isinstance(col, slice):
+        # 両方整数（スカラー）か、両方スライス（2次元のまま）
+        return k
+    return (keep(row), keep(col))
 
 
 # ==============================
@@ -3080,12 +3346,12 @@ def pow(x, y):
 
         # 勾配不要なら早期リターン
         if not (autograd.is_enabled() and x.requires_grad):
-            result = _create_result(result_data)
+            result = _create_result(result_data, math=_is_math(x, y))
             result.requires_grad = False
             return result
 
         # 勾配必要
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x, y))
         result.requires_grad = True
         result._prev = (x,)  # yはリテラルなので含まない
 
@@ -3113,10 +3379,10 @@ def pow(x, y):
     # yがNumTypeの場合（一般的なケース）
     # ───────────────────────────────────────────────────────────
 
-    if not isinstance(x, NumType):
-        x = _auto_convert(x, requires_grad=False)
-    if not isinstance(y, NumType):
-        y = _auto_convert(y, requires_grad=False)
+    x, y = _convert_operands(x, y)
+
+    # べき乗は成分ごとの関数: スカラーはどちら側でもよく、配列どうしは同じ形だけ
+    _check_elementwise("map", "power", x, y)
 
     xp = get_array_module(x._data)
 
@@ -3157,11 +3423,11 @@ def pow(x, y):
     y_req = y.requires_grad
 
     if not (autograd.is_enabled() and (x_req or y_req)):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x, y))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x, y))
     result.requires_grad = True
 
     # _prev を構築
@@ -3216,6 +3482,14 @@ def pow(x, y):
 
 
 # Note: neg, absolute (abs) are now in the "Factory-Created Operations" section
+
+
+def _sum_to_shape(g, shape):
+    """バッチ行列積の勾配 g を、共有していた先頭の軸について足し合わせて shape にする"""
+    extra = g.ndim - len(shape)
+    if extra > 0:
+        g = g.sum(axis=tuple(range(extra)))
+    return g
 
 
 def matmul(x, y):
@@ -3276,8 +3550,12 @@ def matmul(x, y):
             )
         result_data = x._data @ y._data
     else:
-        # 通常の行列積 - 次元チェック
-        if x.shape[-1] != y.shape[0] if len(y.shape) >= 1 else 1:
+        # 通常の行列積（N次元はバッチ行列積: 最後の2軸で行列積、それより前の軸はバッチ）
+        # 次元チェック: x の最後の軸と、y の最後から2番目の軸（y が1次元ならその軸）
+        if x.ndim == 0 or y.ndim == 0:
+            raise DimensionError("matrix multiplication", x.shape, y.shape)
+        k_y = y.shape[-2] if y.ndim >= 2 else y.shape[0]
+        if x.shape[-1] != k_y:
             # より良いヒントを生成
             hint = None
             if len(x.shape) == 2 and len(y.shape) == 2:
@@ -3287,6 +3565,22 @@ def matmul(x, y):
                     hint = f"Try transposing the left matrix: x.T @ y (would give {x.shape[1]}x{y.shape[1]})"
 
             raise DimensionError("matrix multiplication", x.shape, y.shape, hint=hint)
+
+        # バッチの軸: 同じ形か、片方がもう片方の後ろの軸だけを持つ（Cᵢ = A Bᵢ）ときだけ定義される。
+        # サイズ 1 の軸を暗黙に広げることはしない
+        batch_x = x.shape[:-2] if x.ndim >= 2 else ()
+        batch_y = y.shape[:-2] if y.ndim >= 2 else ()
+        short, long_ = sorted((batch_x, batch_y), key=len)
+        if long_[len(long_) - len(short):] != short:
+            raise DimensionError(
+                "matrix multiplication",
+                x.shape,
+                y.shape,
+                hint=(
+                    f"Batch dimensions {batch_x} and {batch_y} do not match. "
+                    "Use nm.broadcast_to to replicate a batch explicitly"
+                ),
+            )
         result_data = x._data @ y._data
 
     # 結果の型を決定
@@ -3304,7 +3598,7 @@ def matmul(x, y):
     elif isinstance(x, Vector) and isinstance(y, RowVector):
         result = Matrix(result_data)
     else:
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x, y))
 
     # 勾配追跡の早期判定
     x_req = x.requires_grad
@@ -3420,76 +3714,38 @@ def matmul(x, y):
                 else:
                     y.grad._data = y.grad._data + grad_y._data
 
-        # 通常の場合の勾配計算
+        # 通常の場合の勾配計算（行列積・バッチ行列積・1次元を含む）
         else:
+            # 1次元の入力は行列とみなす: x (k,) → (1, k)、y (k,) → (k, 1)
             grad_data = grad._data
+            xd = x_data[None, :] if x_data.ndim == 1 else x_data
+            yd = y_data[:, None] if y_data.ndim == 1 else y_data
+            if x_data.ndim == 1 and y_data.ndim == 1:
+                grad_data = xp.reshape(grad_data, (1, 1))
+            elif x_data.ndim == 1:
+                grad_data = xp.expand_dims(grad_data, -2)
+            elif y_data.ndim == 1:
+                grad_data = xp.expand_dims(grad_data, -1)
 
-            # x の勾配
             if x_req:
-                if len(x_shape) == 2 and len(y_shape) == 1:
-                    # 行列×ベクトル: M @ v
-                    grad_data_reshaped = xp.reshape(grad_data, (-1, 1))
-                    y_data_reshaped = xp.reshape(y_data, (1, -1))
-                    grad_x_data = grad_data_reshaped @ y_data_reshaped
-                elif len(x_shape) == 1 and len(y_shape) == 2:
-                    # ベクトル×行列: v @ M
-                    grad_x_data = grad_data @ y_data.T
-                else:
-                    # 一般的な行列×行列、またはバッチ行列
-                    # 3D以上の場合、最後の2軸だけを転置
-                    if y_data.ndim >= 3:
-                        axes = list(range(y_data.ndim))
-                        axes[-2], axes[-1] = axes[-1], axes[-2]
-                        y_data_T = xp.transpose(y_data, axes)
-                        grad_x_data = grad_data @ y_data_T
-                    else:
-                        grad_x_data = grad_data @ y_data.T
-
-                # 元の形状に合わせる
-                # バッチ次元がある場合は sum で reduction
-                while grad_x_data.ndim > len(x_shape):
-                    grad_x_data = xp.sum(grad_x_data, axis=0)
-                grad_x_data = xp.reshape(grad_x_data, x_shape)
+                # ∂L/∂X = G Yᵀ（最後の2軸を転置）。バッチを共有していた分は足し合わせる
+                grad_x_data = grad_data @ xp.swapaxes(yd, -1, -2)
+                grad_x_data = _sum_to_shape(grad_x_data, xd.shape).reshape(x_shape)
                 grad_x = _create_result(grad_x_data)
-
                 if x.grad is None:
                     x.grad = grad_x
                 else:
                     x.grad._data = x.grad._data + grad_x._data
 
-            # y の勾配
             if y_req:
-                if len(x_shape) == 2 and len(y_shape) == 1:
-                    # 行列×ベクトル: M @ v
-                    grad_y_data = x_data.T @ grad_data
-                elif len(x_shape) == 1 and len(y_shape) == 2:
-                    # ベクトル×行列: v @ M
-                    x_data_reshaped = xp.reshape(x_data, (-1, 1))
-                    grad_data_reshaped = xp.reshape(grad_data, (1, -1))
-                    grad_y_data = x_data_reshaped @ grad_data_reshaped
-                else:
-                    # 一般的な行列×行列、またはバッチ行列
-                    # 3D以上の場合、最後の2軸だけを転置
-                    if x_data.ndim >= 3:
-                        axes = list(range(x_data.ndim))
-                        axes[-2], axes[-1] = axes[-1], axes[-2]
-                        x_data_T = xp.transpose(x_data, axes)
-                        grad_y_data = x_data_T @ grad_data
-                    else:
-                        grad_y_data = x_data.T @ grad_data
-
-                # 元の形状に合わせる
-                # バッチ次元がある場合は sum で reduction
-                while grad_y_data.ndim > len(y_shape):
-                    grad_y_data = xp.sum(grad_y_data, axis=0)
-                grad_y_data = xp.reshape(grad_y_data, y_shape)
+                # ∂L/∂Y = Xᵀ G
+                grad_y_data = xp.swapaxes(xd, -1, -2) @ grad_data
+                grad_y_data = _sum_to_shape(grad_y_data, yd.shape).reshape(y_shape)
                 grad_y = _create_result(grad_y_data)
-
                 if y.grad is None:
                     y.grad = grad_y
                 else:
                     y.grad._data = y.grad._data + grad_y._data
-
     result._backward = _backward
     return result
 
@@ -3508,24 +3764,17 @@ def dot(x, y):
     x_is_vector = isinstance(x, (Vector, RowVector))
     y_is_vector = isinstance(y, (Vector, RowVector))
 
-    if x_is_vector or y_is_vector:
-        # Vector/RowVectorが関わる場合、適切にflattenまたは変形
-        if isinstance(x, Vector) and isinstance(y, Vector):
-            # 両方がVector: 内積として計算
-            x_flat = x._data.flatten()
-            y_flat = y._data.flatten()
-            result_data = xp.dot(x_flat, y_flat)
-        elif isinstance(x, RowVector) and isinstance(y, Vector):
-            # RowVector @ Vector -> スカラー
-            result_data = xp.dot(x._data.flatten(), y._data.flatten())
-        elif isinstance(x, Vector) and isinstance(y, RowVector):
-            # Vector @ RowVector -> 外積（行列）
-            result_data = xp.dot(x._data, y._data)
-        else:
-            # 片方だけがVector/RowVector
-            x_data = x._data.flatten() if x_is_vector else x._data
-            y_data = y._data.flatten() if y_is_vector else y._data
-            result_data = xp.dot(x_data, y_data)
+    # ベクトルどうし（Vector / RowVector / 1次元 Tensor）は内積なので、結果はいつもスカラー。
+    # 外積が必要なら Vector @ RowVector を使う
+    inner = (x_is_vector or x._data.ndim == 1) and (y_is_vector or y._data.ndim == 1)
+
+    if inner:
+        result_data = xp.dot(x._data.reshape(-1), y._data.reshape(-1))
+    elif x_is_vector or y_is_vector:
+        # 片方だけがVector/RowVector
+        x_data = x._data.flatten() if x_is_vector else x._data
+        y_data = y._data.flatten() if y_is_vector else y._data
+        result_data = xp.dot(x_data, y_data)
     else:
         # 通常のdot
         result_data = xp.dot(x._data, y._data)
@@ -3533,7 +3782,7 @@ def dot(x, y):
     if not isinstance(result_data, (np.ndarray, (cp.ndarray if cp else type(None)))):
         result_data = xp.asarray(result_data)
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x, y))
 
     # 勾配追跡の早期判定
     x_req = x.requires_grad
@@ -3564,9 +3813,9 @@ def dot(x, y):
         grad_data = grad._data
 
         if x_req:
-            if isinstance(x, Vector) and isinstance(y, Vector):
-                # VectorどうしのDot積の勾配
-                grad_x_data = grad_data * y._data
+            if inner:
+                # 内積の勾配: 相手のベクトルを自分の形にしたもの
+                grad_x_data = (grad_data * y_data.reshape(-1)).reshape(x_shape)
             elif x_is_vector and not y_is_vector:
                 # Vectorと他の型
                 grad_x_data = grad_data * y_data
@@ -3585,9 +3834,8 @@ def dot(x, y):
                 x.grad._data = x.grad._data + grad_x._data
 
         if y_req:
-            if isinstance(x, Vector) and isinstance(y, Vector):
-                # VectorどうしのDot積の勾配
-                grad_y_data = grad_data * x._data
+            if inner:
+                grad_y_data = (grad_data * x_data.reshape(-1)).reshape(y_shape)
             elif y_is_vector and not x_is_vector:
                 # Vectorと他の型
                 grad_y_data = (
@@ -3619,7 +3867,8 @@ def dot(x, y):
 def sum(x, axis=None, keepdims=False):
     """和（自動微分対応）"""
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
     result_data = xp.sum(x._data, axis=axis, keepdims=keepdims)
@@ -3627,7 +3876,7 @@ def sum(x, axis=None, keepdims=False):
     if not isinstance(result_data, (np.ndarray, (cp.ndarray if cp else type(None)))):
         result_data = xp.asarray(result_data)
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
@@ -3671,7 +3920,8 @@ def sum(x, axis=None, keepdims=False):
 def mean(x, axis=None, keepdims=False):
     """平均（自動微分対応）"""
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
     result_data = xp.mean(x._data, axis=axis, keepdims=keepdims)
@@ -3679,7 +3929,7 @@ def mean(x, axis=None, keepdims=False):
     if not isinstance(result_data, (np.ndarray, (cp.ndarray if cp else type(None)))):
         result_data = xp.asarray(result_data)
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
@@ -3764,7 +4014,7 @@ def reshape(x, *shape, order="C"):
     >>> reshape(v, -1)          # (6,) - フラット化
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     # 引数の正規化
     if len(shape) == 1:
@@ -3782,7 +4032,7 @@ def reshape(x, *shape, order="C"):
 
     # NumPyのreshapeを使用（-1の処理も自動）
     result_data = x._data.reshape(shape, order=order)
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
@@ -3857,7 +4107,7 @@ def transpose(x, axes=None):
         Transposed tensor with automatic gradient tracking if enabled
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     # 特別なケース - Vector/RowVector
     if isinstance(x, Vector):
@@ -3964,11 +4214,40 @@ def transpose(x, axes=None):
 # ==============================
 
 
+def _has_int_array_index(key) -> bool:
+    """key に整数の配列（同じ要素を重複して選べるインデックス）が含まれるなら True"""
+    for e in key if isinstance(key, tuple) else (key,):
+        if isinstance(e, (list, np.ndarray)) or (cp is not None and isinstance(e, cp.ndarray)):
+            kind = e.dtype.kind if hasattr(e, "dtype") else np.asarray(e).dtype.kind
+            if kind in ("i", "u"):
+                return True
+    return False
+
+
+def _scatter_add(xp, target, key, values):
+    """target[key] += values を、重複したインデックスも足し合わせて行う"""
+    if xp is np:
+        np.add.at(target, key, values)
+    else:
+        import cupyx
+
+        cupyx.scatter_add(target, key, values)
+
+
 def get_item(x, key):
     """インデックス（自動微分対応・超高速版）"""
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
+    # インデックスに NumType が含まれていれば中身を使う（0次元は Python の数値にする）
+    def _unwrap(k):
+        if isinstance(k, NumType):
+            return k._data.item() if k._data.ndim == 0 else k._data
+        return k
+
+    key = tuple(_unwrap(k) for k in key) if isinstance(key, tuple) else _unwrap(key)
+
+    key = _math_key(x, key)
     x_data = x._data
     result_data = x_data[key]
 
@@ -3976,7 +4255,7 @@ def get_item(x, key):
         xp = get_array_module(x_data)
         result_data = xp.asarray(result_data)
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     if not (autograd.is_enabled() and x.requires_grad):
         result.requires_grad = False
@@ -3995,7 +4274,13 @@ def get_item(x, key):
 
         xp = get_array_module(x_data)
         grad_x_data = xp.zeros(x_shape, dtype=result.grad._data.dtype)
-        grad_x_data[key] = result.grad._data
+        if _has_int_array_index(key):
+            # 整数配列のインデックスは同じ要素を何度も選べる。取り出しは選択行列 P をかける
+            # 線形写像なので、勾配は Pᵀ: 同じ要素への勾配は上書きせずに足し合わせる
+            _scatter_add(xp, grad_x_data, key, result.grad._data)
+        else:
+            # スライスや bool マスクでは同じ要素は1度しか選ばれないので、代入で足りる
+            grad_x_data[key] = result.grad._data
         grad_x = _create_result(grad_x_data)
 
         if x.grad is None:
@@ -4045,7 +4330,7 @@ def random_mask(x, p=0.5, training=True):
     >>> loss.backward()
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     if not training or p == 0:
         return x
@@ -4063,7 +4348,7 @@ def random_mask(x, p=0.5, training=True):
 
     # Apply mask and scale
     result_data = x._data * mask * scale
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
@@ -4134,7 +4419,7 @@ def random_mask_channel(x, p=0.5, training=True):
     convolutional layers where adjacent pixels are strongly correlated.
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     if not training or p == 0:
         return x
@@ -4155,7 +4440,7 @@ def random_mask_channel(x, p=0.5, training=True):
     # Apply mask and scale
     # Broadcasting: (N, C, 1, 1) * (N, C, H, W)
     result_data = x._data * mask * scale
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
@@ -4234,11 +4519,12 @@ def amax(x, axis=None, keepdims=False):
     maximum : Element-wise maximum
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
     result_data = xp.max(x._data, axis=axis, keepdims=keepdims)
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # 勾配は不要（定数として扱う）
     result.requires_grad = False
@@ -4281,11 +4567,12 @@ def amin(x, axis=None, keepdims=False):
     minimum : Element-wise minimum
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
     result_data = xp.min(x._data, axis=axis, keepdims=keepdims)
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
 
     # 勾配は不要（定数として扱う）
     result.requires_grad = False
@@ -4297,25 +4584,21 @@ def amin(x, axis=None, keepdims=False):
 
 def floordiv(x, y):
     """床除算（微分不可能）"""
-    if not isinstance(x, NumType):
-        x = _auto_convert(x, requires_grad=False)
-    if not isinstance(y, NumType):
-        y = _auto_convert(y, requires_grad=False)
+    x, y = _convert_operands(x, y)
+    _check_elementwise("map", "floordiv", x, y)
 
     result = x._data // y._data
-    return _create_result(result, requires_grad=False)
+    return _create_result(result, requires_grad=False, math=_is_math(x, y))
 
 
 def mod(x, y):
     """剰余（微分不可能）"""
     # 型変換（定数は requires_grad=False）
-    if not isinstance(x, NumType):
-        x = _auto_convert(x, requires_grad=False)
-    if not isinstance(y, NumType):
-        y = _auto_convert(y, requires_grad=False)
+    x, y = _convert_operands(x, y)
+    _check_elementwise("map", "mod", x, y)
 
     result = x._data % y._data
-    return _create_result(result, requires_grad=False)
+    return _create_result(result, requires_grad=False, math=_is_math(x, y))
 
 
 # Note: atan2 is now in the "Factory-Created Operations" section
@@ -4324,6 +4607,40 @@ def mod(x, y):
 # ==============================
 # Factory Functions - Tensors
 # ==============================
+
+
+
+def _construct_or_cast(cls, data, **kwargs):
+    """
+    cls の値を作る。data が NumType なら型の変換として扱う。
+
+    型の変換（例: Tensor (n,) → Vector (n, 1)）は、ℝⁿ と ℝⁿˣ¹ の自然な同型、
+    つまり形を並べ替えるだけの恒等写像なので、計算グラフをつないだまま勾配を流す。
+    requires_grad を明示したときは、今までどおり新しい葉（グラフから切り離した値）を作る。
+    """
+    if not isinstance(data, NumType) or "requires_grad" in kwargs:
+        return cls(data, **kwargs)
+
+    x = data
+    result = cls(x._data, requires_grad=False, **kwargs)
+    if not (autograd.is_enabled() and x.requires_grad):
+        return result
+
+    result.requires_grad = True
+    result._prev = (x,)
+    x_shape = x.shape
+
+    def _backward():
+        if result.grad is None:
+            return
+        g = result.grad._data.reshape(x_shape)
+        if x.grad is None:
+            x.grad = _create_result(g)
+        else:
+            x.grad._data = x.grad._data + g
+
+    result._backward = _backward
+    return result
 
 
 def tensor(data, **kwargs) -> Tensor:
@@ -4342,12 +4659,12 @@ def tensor(data, **kwargs) -> Tensor:
     Tensor
         Created tensor
     """
-    return Tensor(data, **kwargs)
+    return _construct_or_cast(Tensor, data, **kwargs)
 
 
 def ten(data, **kwargs) -> Tensor:
     """Alias for tensor()"""
-    return Tensor(data, **kwargs)
+    return _construct_or_cast(Tensor, data, **kwargs)
 
 
 def vector(data, **kwargs) -> Vector:
@@ -4366,12 +4683,12 @@ def vector(data, **kwargs) -> Vector:
     Vector
         Created vector
     """
-    return Vector(data, **kwargs)
+    return _construct_or_cast(Vector, data, **kwargs)
 
 
 def vec(data, **kwargs) -> Vector:
     """Alias for vector()"""
-    return Vector(data, **kwargs)
+    return _construct_or_cast(Vector, data, **kwargs)
 
 
 def rowvector(data, **kwargs) -> RowVector:
@@ -4390,12 +4707,12 @@ def rowvector(data, **kwargs) -> RowVector:
     RowVector
         Created row vector
     """
-    return RowVector(data, **kwargs)
+    return _construct_or_cast(RowVector, data, **kwargs)
 
 
 def rowvec(data, **kwargs) -> RowVector:
     """Alias for rowvector()"""
-    return RowVector(data, **kwargs)
+    return _construct_or_cast(RowVector, data, **kwargs)
 
 
 def matrix(data, **kwargs) -> Matrix:
@@ -4414,12 +4731,12 @@ def matrix(data, **kwargs) -> Matrix:
     Matrix
         Created matrix
     """
-    return Matrix(data, **kwargs)
+    return _construct_or_cast(Matrix, data, **kwargs)
 
 
 def mat(data, **kwargs) -> Matrix:
     """Alias for matrix()"""
-    return Matrix(data, **kwargs)
+    return _construct_or_cast(Matrix, data, **kwargs)
 
 
 # ==============================
@@ -5328,7 +5645,7 @@ def broadcast_to(x, shape):
     (2, 3)
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
 
@@ -5341,12 +5658,12 @@ def broadcast_to(x, shape):
 
     # 勾配追跡の判定
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
     # 勾配が必要な場合
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5390,7 +5707,7 @@ def sum_to(x, shape):
     This is the inverse operation of broadcast_to for gradient computation
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
 
@@ -5413,11 +5730,11 @@ def sum_to(x, shape):
 
     # 勾配追跡
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5465,17 +5782,17 @@ def clip(x, min_val=None, max_val=None):
         Clipped tensor
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
     result_data = xp.clip(x._data, min_val, max_val)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5528,17 +5845,17 @@ def expand_dims(x, axis):
         Tensor with expanded dimensions
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
     result_data = xp.expand_dims(x._data, axis)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5576,17 +5893,17 @@ def squeeze(x, axis=None):
         Squeezed tensor
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
     result_data = xp.squeeze(x._data, axis)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5635,7 +5952,8 @@ def var(x, axis=None, keepdims=False, ddof=0):
         Variance
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
 
@@ -5643,11 +5961,11 @@ def var(x, axis=None, keepdims=False, ddof=0):
     result_data = xp.var(x._data, axis=axis, keepdims=keepdims, ddof=ddof)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5735,7 +6053,8 @@ def logsumexp(x, axis=None, keepdims=False):
         log(sum(exp(x)))
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
+    axis, keepdims = _math_reduce_args(x, axis, keepdims)
 
     xp = get_array_module(x._data)
 
@@ -5752,11 +6071,11 @@ def logsumexp(x, axis=None, keepdims=False):
     result_data = xp.log(sum_exp) + x_max
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -5807,9 +6126,9 @@ def where(condition, x, y):
     """
     # 型変換
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
     if not isinstance(y, NumType):
-        y = _auto_convert(y)
+        y = _auto_convert(y, requires_grad=False)
 
     xp = get_array_module(x._data)
 
@@ -5825,11 +6144,11 @@ def where(condition, x, y):
     y_req = y.requires_grad
 
     if not (autograd.is_enabled() and (x_req or y_req)):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x, y))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x, y))
     result.requires_grad = True
 
     if x_req and y_req:
@@ -5890,7 +6209,7 @@ def split(x, indices_or_sections, axis=0):
         List of sub-tensors
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     xp = get_array_module(x._data)
 
@@ -5898,14 +6217,14 @@ def split(x, indices_or_sections, axis=0):
     split_arrays = xp.split(x._data, indices_or_sections, axis=axis)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        return [_create_result(arr, requires_grad=False) for arr in split_arrays]
+        return [_create_result(arr, requires_grad=False, math=_is_math(x)) for arr in split_arrays]
 
     # 各分割に対してTensorを作成
     results = []
     split_infos = []  # 勾配計算用の情報を保存
 
     for i, arr in enumerate(split_arrays):
-        result = _create_result(arr)
+        result = _create_result(arr, math=_is_math(x))
         result.requires_grad = True
         result._prev = (x,)
 
@@ -5968,7 +6287,7 @@ def tile(x, reps):
         Tiled tensor
     """
     if not isinstance(x, NumType):
-        x = _auto_convert(x)
+        x = _auto_convert(x, requires_grad=False)
 
     # repsを正規化（intの場合はtupleに）
     if isinstance(reps, int):
@@ -5978,11 +6297,11 @@ def tile(x, reps):
     result_data = xp.tile(x._data, reps)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        result = _create_result(result_data)
+        result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
         return result
 
-    result = _create_result(result_data)
+    result = _create_result(result_data, math=_is_math(x))
     result.requires_grad = True
     result._prev = (x,)
 
@@ -6054,6 +6373,13 @@ def tile(x, reps):
 # ==============================
 
 
+def _pair(v):
+    """整数なら (v, v)、(縦, 横) ならそのまま返す"""
+    if isinstance(v, (tuple, list)):
+        return int(v[0]), int(v[1])
+    return int(v), int(v)
+
+
 def im2col(img, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
     """
     Convert image to column matrix for convolution (optimized version)
@@ -6070,12 +6396,12 @@ def im2col(img, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
         Kernel height
     kernel_w : int
         Kernel width
-    stride : int, optional
-        Stride (default: 1)
-    padding : int, optional
-        Padding (default: 0)
-    dilation : int, optional
-        Dilation (default: 1)
+    stride : int or (int, int), optional
+        Stride (default: 1). 縦と横で別々の値を (縦, 横) で渡せる
+    padding : int or (int, int), optional
+        Padding (default: 0). 縦と横で別々の値を (縦, 横) で渡せる
+    dilation : int or (int, int), optional
+        Dilation (default: 1). 縦と横で別々の値を (縦, 横) で渡せる
 
     Returns
     -------
@@ -6097,16 +6423,19 @@ def im2col(img, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
     """
     xp = get_array_module(img)
     N, C, H, W = img.shape
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    dil_h, dil_w = _pair(dilation)
 
     # Calculate output dimensions
-    out_h = (H + 2 * padding - dilation * (kernel_h - 1) - 1) // stride + 1
-    out_w = (W + 2 * padding - dilation * (kernel_w - 1) - 1) // stride + 1
+    out_h = (H + 2 * pad_h - dil_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (W + 2 * pad_w - dil_w * (kernel_w - 1) - 1) // stride_w + 1
 
     # Apply padding if needed
-    if padding > 0:
+    if pad_h > 0 or pad_w > 0:
         img = xp.pad(
             img,
-            [(0, 0), (0, 0), (padding, padding), (padding, padding)],
+            [(0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)],
             mode="constant",
             constant_values=0,
         )
@@ -6115,14 +6444,14 @@ def im2col(img, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
     # Generate all positions where we need to sample
 
     # Starting positions for each output location
-    i0 = xp.arange(kernel_h) * dilation  # (kernel_h,)
-    i1 = xp.arange(kernel_w) * dilation  # (kernel_w,)
+    i0 = xp.arange(kernel_h) * dil_h  # (kernel_h,)
+    i1 = xp.arange(kernel_w) * dil_w  # (kernel_w,)
     i0 = xp.repeat(i0, kernel_w)  # (kernel_h * kernel_w,)
     i1 = xp.tile(i1, kernel_h)  # (kernel_h * kernel_w,)
 
     # Output positions
-    j0 = xp.arange(out_h) * stride  # (out_h,)
-    j1 = xp.arange(out_w) * stride  # (out_w,)
+    j0 = xp.arange(out_h) * stride_h  # (out_h,)
+    j1 = xp.arange(out_w) * stride_w  # (out_w,)
 
     # Combine to get all sampling positions
     # Broadcasting: (kernel_h*kernel_w, 1) + (1, out_h) -> (kernel_h*kernel_w, out_h)
@@ -6153,30 +6482,35 @@ def im2col(img, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
 def col2im(col, input_shape, kernel_h, kernel_w, stride=1, padding=0, dilation=1):
     """
     Convert column matrix back to image (fully vectorized version)
+
+    stride, padding, dilation は im2col と同じく、整数か (縦, 横) のタプル。
     """
     xp = get_array_module(col)
     N, C, H, W = input_shape
+    stride_h, stride_w = _pair(stride)
+    pad_h, pad_w = _pair(padding)
+    dil_h, dil_w = _pair(dilation)
 
     # Calculate output dimensions
-    out_h = (H + 2 * padding - dilation * (kernel_h - 1) - 1) // stride + 1
-    out_w = (W + 2 * padding - dilation * (kernel_w - 1) - 1) // stride + 1
+    out_h = (H + 2 * pad_h - dil_h * (kernel_h - 1) - 1) // stride_h + 1
+    out_w = (W + 2 * pad_w - dil_w * (kernel_w - 1) - 1) // stride_w + 1
 
     # Reshape col to (N, C, kernel_h*kernel_w, out_h, out_w)
     col = col.reshape(N, C, kernel_h * kernel_w, out_h, out_w)
 
     # Initialize output image (with padding)
-    H_pad = H + 2 * padding
-    W_pad = W + 2 * padding
+    H_pad = H + 2 * pad_h
+    W_pad = W + 2 * pad_w
     img = xp.zeros((N, C, H_pad, W_pad), dtype=col.dtype)
 
     # Create index arrays
-    i0 = xp.arange(kernel_h) * dilation
-    i1 = xp.arange(kernel_w) * dilation
+    i0 = xp.arange(kernel_h) * dil_h
+    i1 = xp.arange(kernel_w) * dil_w
     i0 = xp.repeat(i0, kernel_w)  # (kernel_h*kernel_w,)
     i1 = xp.tile(i1, kernel_h)  # (kernel_h*kernel_w,)
 
-    j0 = xp.arange(out_h) * stride  # (out_h,)
-    j1 = xp.arange(out_w) * stride  # (out_w,)
+    j0 = xp.arange(out_h) * stride_h  # (out_h,)
+    j1 = xp.arange(out_w) * stride_w  # (out_w,)
 
     # Create all position indices
     i = i0.reshape(-1, 1, 1) + j0.reshape(1, -1, 1)  # (kernel_h*kernel_w, out_h, 1)
@@ -6207,10 +6541,7 @@ def col2im(col, input_shape, kernel_h, kernel_w, stride=1, padding=0, dilation=1
     xp.add.at(img, (n_flat, c_flat, i_flat, j_flat), col_flat)
 
     # Remove padding
-    if padding > 0:
-        return img[:, :, padding:-padding, padding:-padding]
-    else:
-        return img
+    return img[:, :, pad_h : H_pad - pad_h, pad_w : W_pad - pad_w]
 
 
 # ==============================
@@ -6220,6 +6551,7 @@ def col2im(col, input_shape, kernel_h, kernel_w, stride=1, padding=0, dilation=1
 __all__ = [
     # ==================== Gradient Control ====================
     "autograd",
+    "make_op",
     # ==================== GPU Control ====================
     "cuda",
     # ==================== Type ====================

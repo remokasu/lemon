@@ -3,6 +3,7 @@ import os
 import tempfile
 import shutil
 import numpy as np
+import pytest
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"))
 if parent_dir not in sys.path:
@@ -13,110 +14,101 @@ from lemon.nnlib.data import DataLoader, TensorDataset
 import lemon.nnlib as nl
 
 
-def test_mnist_dataset():
+@pytest.mark.network
+def test_mnist_dataset(dataset_root):
     """Test MNIST dataset"""
 
     print("Testing MNIST dataset...")
 
-    # Create temporary directory
-    temp_dir = tempfile.mkdtemp()
+    # Shared download cache (see tests/conftest.py)
+    root = os.path.join(dataset_root, "mnist")
 
+    # Test 1: Download MNIST (flatten=True for MLP tests)
     try:
-        # Test 1: Download MNIST (flatten=True for MLP tests)
-        try:
-            train_dataset = MNIST(
-                root=temp_dir, train=True, download=True, flatten=True
-            )
-            test_dataset = MNIST(root=temp_dir, train=False, flatten=True)
+        train_dataset = MNIST(root=root, train=True, download=True, flatten=True)
+        test_dataset = MNIST(root=root, train=False, flatten=True)
 
-            assert len(train_dataset) == 60000, "Training set should have 60000 samples"
-            assert len(test_dataset) == 10000, "Test set should have 10000 samples"
-            print("  ✅ MNIST download and loading")
-        except Exception as e:
-            # If download fails (no internet), skip this test
-            print(f"  ⚠️  MNIST download skipped (no internet connection)")
-            print(f"      Error: {e}")
-            return
+        assert len(train_dataset) == 60000, "Training set should have 60000 samples"
+        assert len(test_dataset) == 10000, "Test set should have 10000 samples"
+        print("  ✅ MNIST download and loading")
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"MNIST download failed: {e}")
 
-        # Test 2: Dataset indexing
-        x, y = train_dataset[0]
-        assert x.shape == (784,), f"Image should be flattened to 784, got {x.shape}"
-        assert isinstance(y, (int, type(x))) or hasattr(y, "__int__"), (
-            "Label should be integer-like"
+    # Test 2: Dataset indexing
+    x, y = train_dataset[0]
+    assert x.shape == (784,), f"Image should be flattened to 784, got {x.shape}"
+    assert isinstance(y, (int, type(x))) or hasattr(y, "__int__"), (
+        "Label should be integer-like"
+    )
+    print("  ✅ MNIST indexing")
+
+    # Test 3: Data range
+    xp = type(x).__module__.split(".")[0]
+    if xp == "numpy":
+        assert np.all(x >= 0) and np.all(x <= 1), (
+            "Images should be normalized to [0, 1]"
         )
-        print("  ✅ MNIST indexing")
+    print("  ✅ MNIST data normalization")
 
-        # Test 3: Data range
-        xp = type(x).__module__.split(".")[0]
-        if xp == "numpy":
-            assert np.all(x >= 0) and np.all(x <= 1), (
-                "Images should be normalized to [0, 1]"
-            )
-        print("  ✅ MNIST data normalization")
+    # Test 4: Label range
+    all_labels = [train_dataset[i][1] for i in range(100)]
+    for label in all_labels:
+        label_val = int(label) if hasattr(label, "__int__") else label
+        assert 0 <= label_val <= 9, f"Labels should be in [0, 9], got {label_val}"
+    print("  ✅ MNIST label range")
 
-        # Test 4: Label range
-        all_labels = [train_dataset[i][1] for i in range(100)]
-        for label in all_labels:
-            label_val = int(label) if hasattr(label, "__int__") else label
-            assert 0 <= label_val <= 9, f"Labels should be in [0, 9], got {label_val}"
-        print("  ✅ MNIST label range")
+    # Test 5: Dataset already exists (no re-download)
+    train_dataset2 = MNIST(root=root, train=True, download=True)
+    assert len(train_dataset2) == 60000, "Should load existing dataset"
+    print("  ✅ MNIST skip re-download")
 
-        # Test 5: Dataset already exists (no re-download)
-        train_dataset2 = MNIST(root=temp_dir, train=True, download=True)
-        assert len(train_dataset2) == 60000, "Should load existing dataset"
-        print("  ✅ MNIST skip re-download")
-
-        # Test 6: Dataset not found error
-        empty_dir = tempfile.mkdtemp()
-        try:
-            MNIST(root=empty_dir, train=True, download=False)
-            assert False, "Should raise RuntimeError when dataset not found"
-        except RuntimeError as e:
-            assert "not found" in str(e)
-        finally:
-            shutil.rmtree(empty_dir)
-        print("  ✅ MNIST not found error")
-
-        # Test 7: Test set
-        x_test, y_test = test_dataset[0]
-        assert x_test.shape == (784,), "Test images should also be flattened"
-        print("  ✅ MNIST test set")
-
-        # Test 8: Multiple accesses
-        x1, y1 = train_dataset[100]
-        x2, y2 = train_dataset[100]
-
-        if hasattr(x1, "__array__"):
-            assert np.allclose(x1, x2), "Same index should return same data"
-        assert y1 == y2, "Same index should return same label"
-        print("  ✅ MNIST consistent access")
-
-        # Test 9: Transform (if provided)
-        def dummy_transform(x):
-            return x * 2
-
-        dataset_with_transform = MNIST(
-            root=temp_dir, train=True, transform=dummy_transform, flatten=True
-        )
-        x_transformed, _ = dataset_with_transform[0]
-        x_original, _ = train_dataset[0]
-
-        # Transformed should be different
-        if hasattr(x_transformed, "__array__"):
-            assert not np.allclose(x_transformed, x_original), (
-                "Transform should modify data"
-            )
-        print("  ✅ MNIST transform")
-
+    # Test 6: Dataset not found error
+    empty_dir = tempfile.mkdtemp()
+    try:
+        MNIST(root=empty_dir, train=True, download=False)
+        assert False, "Should raise RuntimeError when dataset not found"
+    except RuntimeError as e:
+        assert "not found" in str(e)
     finally:
-        # Cleanup
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        shutil.rmtree(empty_dir)
+    print("  ✅ MNIST not found error")
+
+    # Test 7: Test set
+    x_test, y_test = test_dataset[0]
+    assert x_test.shape == (784,), "Test images should also be flattened"
+    print("  ✅ MNIST test set")
+
+    # Test 8: Multiple accesses
+    x1, y1 = train_dataset[100]
+    x2, y2 = train_dataset[100]
+
+    if hasattr(x1, "__array__"):
+        assert np.allclose(x1, x2), "Same index should return same data"
+    assert y1 == y2, "Same index should return same label"
+    print("  ✅ MNIST consistent access")
+
+    # Test 9: Transform (if provided)
+    def dummy_transform(x):
+        return x * 2
+
+    dataset_with_transform = MNIST(
+        root=root, train=True, transform=dummy_transform, flatten=True
+    )
+    x_transformed, _ = dataset_with_transform[0]
+    x_original, _ = train_dataset[0]
+
+    # Transformed should be different
+    if hasattr(x_transformed, "__array__"):
+        assert not np.allclose(x_transformed, x_original), (
+            "Transform should modify data"
+        )
+    print("  ✅ MNIST transform")
 
     print("✅ All MNIST dataset tests passed!\n")
 
 
-def test_mnist_with_dataloader():
+@pytest.mark.network
+def test_mnist_with_dataloader(dataset_root):
     """Test MNIST with DataLoader integration"""
     import lemon as nc
     import tempfile
@@ -124,84 +116,77 @@ def test_mnist_with_dataloader():
 
     print("Testing MNIST with DataLoader...")
 
-    temp_dir = tempfile.mkdtemp()
+    root = os.path.join(dataset_root, "mnist")
 
+    # Download MNIST (flatten=True for MLP tests)
     try:
-        # Download MNIST (flatten=True for MLP tests)
-        try:
-            train_dataset = MNIST(
-                root=temp_dir, train=True, download=True, flatten=True
-            )
-        except Exception as e:
-            print(f"  ⚠️  MNIST download skipped (no internet connection)")
-            return
+        train_dataset = MNIST(root=root, train=True, download=True, flatten=True)
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"MNIST download failed: {e}")
 
-        # Test 1: DataLoader with MNIST
-        loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
+    # Test 1: DataLoader with MNIST
+    loader = DataLoader(train_dataset, batch_size=32, shuffle=False)
 
-        assert len(loader) == (60000 + 31) // 32, (
-            "DataLoader should have correct number of batches"
-        )
-        print("  ✅ DataLoader with MNIST")
+    assert len(loader) == (60000 + 31) // 32, (
+        "DataLoader should have correct number of batches"
+    )
+    print("  ✅ DataLoader with MNIST")
 
-        # Test 2: Iterate through batches
-        batch_count = 0
-        for X_batch, y_batch in loader:
-            batch_count += 1
+    # Test 2: Iterate through batches
+    batch_count = 0
+    for X_batch, y_batch in loader:
+        batch_count += 1
 
-            # Check batch shapes
-            assert X_batch.shape[1] == 784, "Batch should have 784 features"
-            assert X_batch.shape[0] <= 32, "Batch size should be <= 32"
+        # Check batch shapes
+        assert X_batch.shape[1] == 784, "Batch should have 784 features"
+        assert X_batch.shape[0] <= 32, "Batch size should be <= 32"
 
-            if batch_count == 5:  # Test first 5 batches only
-                break
-
-        print("  ✅ MNIST batch iteration")
-
-        # Test 3: Shuffle
-        loader_shuffle = DataLoader(train_dataset, batch_size=64, shuffle=True)
-
-        first_batch_1 = None
-        first_batch_2 = None
-
-        for X_batch, _ in loader_shuffle:
-            first_batch_1 = X_batch
+        if batch_count == 5:  # Test first 5 batches only
             break
 
-        for X_batch, _ in loader_shuffle:
-            first_batch_2 = X_batch
-            break
+    print("  ✅ MNIST batch iteration")
 
-        # Batches should be different with high probability
-        xp = type(first_batch_1).__module__.split(".")[0]
-        if xp == "numpy":
-            same = np.allclose(first_batch_1, first_batch_2)
-            assert not same, "Shuffled batches should be different"
+    # Test 3: Shuffle
+    loader_shuffle = DataLoader(train_dataset, batch_size=64, shuffle=True)
 
-        print("  ✅ MNIST with shuffle")
+    first_batch_1 = None
+    first_batch_2 = None
 
-        # Test 4: Small dataset (drop_last)
-        small_dataset = MNIST(root=temp_dir, train=False, flatten=True)  # 10000 samples
-        loader_drop = DataLoader(small_dataset, batch_size=64, drop_last=True)
+    for X_batch, _ in loader_shuffle:
+        first_batch_1 = X_batch
+        break
 
-        batches = []
-        for X_batch, _ in loader_drop:
-            batches.append(X_batch.shape[0])
+    for X_batch, _ in loader_shuffle:
+        first_batch_2 = X_batch
+        break
 
-        # All batches should be complete (size 64)
-        assert all(size == 64 for size in batches), (
-            "All batches should be complete with drop_last"
-        )
-        print("  ✅ MNIST with drop_last")
+    # Batches should be different with high probability
+    xp = type(first_batch_1).__module__.split(".")[0]
+    if xp == "numpy":
+        same = np.allclose(first_batch_1, first_batch_2)
+        assert not same, "Shuffled batches should be different"
 
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+    print("  ✅ MNIST with shuffle")
+
+    # Test 4: Small dataset (drop_last)
+    small_dataset = MNIST(root=root, train=False, flatten=True)  # 10000 samples
+    loader_drop = DataLoader(small_dataset, batch_size=64, drop_last=True)
+
+    batches = []
+    for X_batch, _ in loader_drop:
+        batches.append(X_batch.shape[0])
+
+    # All batches should be complete (size 64)
+    assert all(size == 64 for size in batches), (
+        "All batches should be complete with drop_last"
+    )
+    print("  ✅ MNIST with drop_last")
 
     print("✅ All MNIST DataLoader tests passed!\n")
 
 
-def test_mnist_training_integration():
+@pytest.mark.network
+def test_mnist_training_integration(dataset_root):
     """Test complete training integration with MNIST"""
     import lemon as nc
     import tempfile
@@ -209,36 +194,50 @@ def test_mnist_training_integration():
 
     print("Testing MNIST training integration...")
 
-    temp_dir = tempfile.mkdtemp()
+    root = os.path.join(dataset_root, "mnist")
 
+    # Download MNIST (flatten=True for MLP tests)
     try:
-        # Download MNIST (flatten=True for MLP tests)
-        try:
-            train_dataset = MNIST(
-                root=temp_dir, train=True, download=True, flatten=True
-            )
-        except Exception as e:
-            print(f"  ⚠️  MNIST training test skipped (no internet connection)")
-            return
+        train_dataset = MNIST(root=root, train=True, download=True, flatten=True)
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"MNIST download failed: {e}")
 
-        # Use small subset for fast testing
-        small_dataset = TensorDataset(
-            train_dataset.data[:100],  # Only 100 samples
-            train_dataset.targets[:100],
-        )
+    # Use small subset for fast testing
+    small_dataset = TensorDataset(
+        train_dataset.data[:100],  # Only 100 samples
+        train_dataset.targets[:100],
+    )
 
-        loader = DataLoader(small_dataset, batch_size=10, shuffle=True)
+    loader = DataLoader(small_dataset, batch_size=10, shuffle=True)
 
-        # Test 1: Create simple model
-        model = nl.Sequential(nl.Linear(784, 32), nl.Relu(), nl.Linear(32, 10))
+    # Test 1: Create simple model
+    model = nl.Sequential(nl.Linear(784, 32), nl.Relu(), nl.Linear(32, 10))
 
-        optimizer = nl.SGD(model.parameters(), lr=0.01)
-        print("  ✅ Model and optimizer creation")
+    optimizer = nl.SGD(model.parameters(), lr=0.01)
+    print("  ✅ Model and optimizer creation")
 
-        # Test 2: Single training step
-        nc.autograd.enable()
-        nl.train.on()
+    # Test 2: Single training step
+    nc.autograd.enable()
+    nl.train.on()
 
+    for X_batch, y_batch in loader:
+        X_batch = nc.tensor(X_batch)
+        y_batch = nc.tensor(y_batch)
+
+        y_pred = model(X_batch)
+        loss = nl.softmax_cross_entropy(y_pred, y_batch)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        assert loss._data > 0, "Loss should be positive"
+        break
+
+    print("  ✅ Single training step")
+
+    # Test 3: Multiple epochs (quick)
+    for epoch in range(2):
         for X_batch, y_batch in loader:
             X_batch = nc.tensor(X_batch)
             y_batch = nc.tensor(y_batch)
@@ -250,38 +249,16 @@ def test_mnist_training_integration():
             loss.backward()
             optimizer.step()
 
-            assert loss._data > 0, "Loss should be positive"
-            break
+    print("  ✅ Multiple epochs")
 
-        print("  ✅ Single training step")
+    # Test 4: Evaluation mode
+    nl.train.off()
 
-        # Test 3: Multiple epochs (quick)
-        for epoch in range(2):
-            for X_batch, y_batch in loader:
-                X_batch = nc.tensor(X_batch)
-                y_batch = nc.tensor(y_batch)
+    X_test = nc.tensor(train_dataset.data[:10])
+    y_test = model(X_test)
 
-                y_pred = model(X_batch)
-                loss = nl.softmax_cross_entropy(y_pred, y_batch)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-        print("  ✅ Multiple epochs")
-
-        # Test 4: Evaluation mode
-        nl.train.off()
-
-        X_test = nc.tensor(train_dataset.data[:10])
-        y_test = model(X_test)
-
-        assert y_test.shape == (10, 10), "Output shape should be (10, 10)"
-        print("  ✅ Evaluation mode")
-
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+    assert y_test.shape == (10, 10), "Output shape should be (10, 10)"
+    print("  ✅ Evaluation mode")
 
     print("✅ All MNIST training integration tests passed!\n")
 
@@ -320,6 +297,7 @@ def test_sequential_modules_property():
     print("✅ All Sequential.modules tests passed!\n")
 
 
+@pytest.mark.network
 def test_mnist_download_edge_cases():
     """Test MNIST download edge cases for coverage"""
     import lemon as nc
@@ -389,7 +367,8 @@ def test_mnist_download_edge_cases():
     print("✅ All MNIST download edge cases passed!\n")
 
 
-def test_mnist_download_partial_success():
+@pytest.mark.network
+def test_mnist_download_partial_success(dataset_root):
     """Test MNIST download with partial success (some files exist)"""
     import lemon as nc
     import os
@@ -398,30 +377,25 @@ def test_mnist_download_partial_success():
 
     print("Testing MNIST partial download...")
 
-    temp_dir = tempfile.mkdtemp()
+    root = os.path.join(dataset_root, "mnist")
 
+    # Download first
     try:
-        # Download first
-        try:
-            dataset = MNIST(root=temp_dir, train=True, download=True)
-        except Exception:
-            print("  ⚠️  MNIST download skipped (no internet)")
-            return
+        dataset = MNIST(root=root, train=True, download=True)
+    except (RuntimeError, OSError) as e:
+        pytest.skip(f"MNIST download failed: {e}")
 
-        # Now some files exist, try to download again
-        # This should skip existing files
-        dataset2 = MNIST(root=temp_dir, train=True, download=True)
+    # Now some files exist, try to download again
+    # This should skip existing files
+    dataset2 = MNIST(root=root, train=True, download=True)
 
-        assert len(dataset2) == 60000, "Should still load dataset correctly"
-        print("  ✅ MNIST with existing files")
-
-    finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+    assert len(dataset2) == 60000, "Should still load dataset correctly"
+    print("  ✅ MNIST with existing files")
 
     print("✅ MNIST partial download test passed!\n")
 
 
+@pytest.mark.network
 def test_mnist_mirror_fallback():
     """Test MNIST mirror fallback mechanism"""
     import lemon as nc

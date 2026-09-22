@@ -11,7 +11,10 @@ import lemon as lm
 # Data: y = 2x + 3 + noise / データ: y = 2x + 3 + ノイズ
 lm.seed(42)
 X = lm.rand(50, 1, low=0, high=1)
-y = 2 * X + 3 + lm.rand(50, 1, low=-0.1, high=0.1)
+# スカラーは全成分に足せないので、定数ベクトル 3·1 を明示する
+# A scalar cannot be added to a vector; write the constant vector 3·1 explicitly
+one = lm.ones_like(X)
+y = 2 * X + 3 * one + lm.rand(50, 1, low=-0.1, high=0.1)
 
 # Parameters / パラメータ
 w = lm.Real(0.0, requires_grad=True)
@@ -22,7 +25,7 @@ learning_rate = 0.1
 epochs = 100
 
 for epoch in range(epochs):
-    y_pred = w * X + b
+    y_pred = w * X + b * one  # y = w x + b·1
     loss = lm.mean((y_pred - y) ** 2)
 
     loss.backward()

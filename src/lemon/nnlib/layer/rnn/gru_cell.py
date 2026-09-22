@@ -116,12 +116,12 @@ class GRUCell(Module):
         # 入力側の線形変換
         gi = x @ self.weight_ih.data
         if self.use_bias:
-            gi = gi + self.bias_ih.data
+            gi = gi + nm.broadcast_to(self.bias_ih.data, gi.shape)
 
         # 隠れ状態側の線形変換
         gh = h @ self.weight_hh.data
         if self.use_bias:
-            gh = gh + self.bias_hh.data
+            gh = gh + nm.broadcast_to(self.bias_hh.data, gh.shape)
 
         # ゲートを分割
         # gi[:, 0:h] = input reset gate
@@ -136,14 +136,15 @@ class GRUCell(Module):
         h_n = gh[:, 2 * self.hidden_size : 3 * self.hidden_size]
 
         # リセットゲートと更新ゲート
-        r = 1 / (1 + nm.exp(-(i_r + h_r)))  # sigmoid(i_r + h_r)
-        z = 1 / (1 + nm.exp(-(i_z + h_z)))  # sigmoid(i_z + h_z)
+        one = nm.ones_like(i_r)
+        r = 1 / (one + nm.exp(-(i_r + h_r)))  # sigmoid(i_r + h_r)
+        z = 1 / (one + nm.exp(-(i_z + h_z)))  # sigmoid(i_z + h_z)
 
         # 新しい値（リセットゲートを適用）
         n = nm.tanh(i_n + r * h_n)
 
         # 隠れ状態を更新
-        h_next = (1 - z) * n + z * h
+        h_next = (one - z) * n + z * h
 
         return h_next
 

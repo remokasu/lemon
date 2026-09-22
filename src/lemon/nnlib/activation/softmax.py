@@ -27,9 +27,10 @@ def softmax(x, axis=-1):
     >>> # y ≈ [[0.09, 0.24, 0.67]]
     >>> nm.sum(y, axis=-1)  # Sum is 1
     """
-    x_max = nm.amax(x, axis=axis, keepdims=True)
+    # 軸ごとの最大値と和を、x の形に明示的に広げてから引く・割る
+    x_max = nm.broadcast_to(nm.amax(x, axis=axis, keepdims=True), x.shape)
     exp_x = nm.exp(x - x_max)
-    return exp_x / nm.sum(exp_x, axis=axis, keepdims=True)
+    return exp_x / nm.broadcast_to(nm.sum(exp_x, axis=axis, keepdims=True), x.shape)
 
 
 class Softmax(Module):

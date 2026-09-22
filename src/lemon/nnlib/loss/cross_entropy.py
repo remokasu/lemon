@@ -38,7 +38,7 @@ def softmax_cross_entropy(y_pred, y_true, reduction="mean"):
     # Cross entropy: -sum(y_true * log(probs))
     eps = 1e-10
 
-    log_probs = nm.log(probs + eps)
+    log_probs = nm.log(probs + eps * nm.ones_like(probs))
     loss_per_sample = -nm.sum(y_true_onehot * log_probs, axis=-1)
 
     if reduction == "mean":

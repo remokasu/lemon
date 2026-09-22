@@ -2,6 +2,72 @@ import lemon.numlib as nm
 from lemon.nnlib.module import Module
 
 
+def _max_pool_2d_forward(x, kernel_size, stride, padding):
+    xp = nm.get_array_module(x)
+    N, C, H, W = x.shape
+
+    # Normalize parameters
+    if isinstance(kernel_size, int):
+        kernel_size = (kernel_size, kernel_size)
+    kernel_h, kernel_w = kernel_size
+
+    if stride is None:
+        stride = kernel_size
+    if isinstance(stride, int):
+        stride = (stride, stride)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+
+    # Calculate output dimensions
+    out_h = (H + 2 * padding[0] - kernel_h) // stride[0] + 1
+    out_w = (W + 2 * padding[1] - kernel_w) // stride[1] + 1
+
+    # 最大値プーリングの padding は -inf で埋める（0 で埋めると、入力が負のとき
+    # 埋めた 0 が最大値に選ばれてしまう）。埋めてから padding なしで im2col する
+    if padding[0] > 0 or padding[1] > 0:
+        x = xp.pad(
+            x,
+            ((0, 0), (0, 0), (padding[0], padding[0]), (padding[1], padding[1])),
+            constant_values=-xp.inf,
+        )
+
+    # Use im2col to extract patches
+    col = nm.im2col(x, kernel_h, kernel_w, stride=stride, padding=0)
+    col = col.reshape(N, C, kernel_h * kernel_w, out_h * out_w)
+
+    # Take max along kernel dimension
+    argmax = xp.argmax(col, axis=2)  # (N, C, out_h*out_w)
+    max_vals = xp.take_along_axis(col, argmax[:, :, None, :], axis=2)[:, :, 0, :]
+    output = max_vals.reshape(N, C, out_h, out_w)
+
+    ctx = (col.shape, argmax, x.shape, kernel_h, kernel_w, stride, padding)  # x は padding 後
+    return output, ctx
+
+
+def _max_pool_2d_backward(ctx, grad, needs_grad):
+    col_shape, argmax, x_shape, kernel_h, kernel_w, stride, padding = ctx
+    xp = nm.get_array_module(grad)
+    N, C, _, n_pos = col_shape
+
+    # Distribute gradients only to max positions
+    # 各 (n, c, pos) の最大値の位置は1つだけなので、代入で足りる
+    grad_col = xp.zeros(col_shape, dtype=grad.dtype)
+    n_idx, c_idx, pos_idx = xp.meshgrid(
+        xp.arange(N), xp.arange(C), xp.arange(n_pos), indexing="ij"
+    )
+    grad_col[n_idx, c_idx, argmax, pos_idx] = grad.reshape(N, C, n_pos)
+
+    # Use col2im to convert back to input gradient (padding 後の形), then crop the padding
+    grad_col = grad_col.reshape(N, C * kernel_h * kernel_w, n_pos)
+    grad_x = nm.col2im(grad_col, x_shape, kernel_h, kernel_w, stride=stride, padding=0)
+    ph, pw = padding
+    grad_x = grad_x[:, :, ph : x_shape[2] - ph, pw : x_shape[3] - pw]
+    return (grad_x,)
+
+
+_max_pool_2d = nm.make_op(_max_pool_2d_forward, _max_pool_2d_backward)
+
+
 def max_pool_2d(x, kernel_size, stride=None, padding=0):
     """
     2D Max pooling (functional API with autograd support)
@@ -40,101 +106,7 @@ def max_pool_2d(x, kernel_size, stride=None, padding=0):
     This implementation uses im2col + argmax for efficiency.
     The gradient only flows through the maximum value locations.
     """
-    xp = nm.get_array_module(x._data)
-    N, C, H, W = x.shape
-
-    # Normalize parameters
-    if isinstance(kernel_size, int):
-        kernel_size = (kernel_size, kernel_size)
-    kernel_h, kernel_w = kernel_size
-
-    if stride is None:
-        stride = kernel_size
-    if isinstance(stride, int):
-        stride = (stride, stride)
-
-    if isinstance(padding, int):
-        padding = (padding, padding)
-
-    # Calculate output dimensions
-    out_h = (H + 2 * padding[0] - kernel_h) // stride[0] + 1
-    out_w = (W + 2 * padding[1] - kernel_w) // stride[1] + 1
-
-    # Use im2col to extract patches
-    col = nm.im2col(x._data, kernel_h, kernel_w, stride=stride[0], padding=padding[0])
-    col = col.reshape(N, C, kernel_h * kernel_w, out_h * out_w)
-
-    # Take max along kernel dimension
-    argmax = xp.argmax(col, axis=2)  # (N, C, out_h*out_w)
-
-    # Get max values
-    max_vals = xp.zeros((N, C, out_h * out_w), dtype=x._data.dtype)
-    for n in range(N):
-        for c in range(C):
-            for pos in range(out_h * out_w):
-                max_vals[n, c, pos] = col[n, c, argmax[n, c, pos], pos]
-
-    # Reshape output
-    output_data = max_vals.reshape(N, C, out_h, out_w)
-
-    # Create result using _create_result
-    result = nm._create_result(output_data)
-
-    # Gradient computation
-    if not nm.autograd.is_enabled() or not x.requires_grad:
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    result._prev = (x,)
-
-    # Save variables for backward
-    saved_col_shape = col.shape
-    saved_argmax = argmax
-    saved_x_shape = x.shape
-    saved_kernel_h = kernel_h
-    saved_kernel_w = kernel_w
-    saved_stride = stride
-    saved_padding = padding
-
-    def _backward():
-        if result.grad is None:
-            return
-
-        grad_output = result.grad._data  # (N, C, out_h, out_w)
-        grad_output_flat = grad_output.reshape(N, C, out_h * out_w)
-
-        # Create gradient for col
-        grad_col = xp.zeros(saved_col_shape, dtype=grad_output.dtype)
-
-        # Distribute gradients only to max positions
-        for n in range(N):
-            for c in range(C):
-                for pos in range(out_h * out_w):
-                    max_idx = saved_argmax[n, c, pos]
-                    grad_col[n, c, max_idx, pos] = grad_output_flat[n, c, pos]
-
-        # Reshape grad_col for col2im
-        grad_col = grad_col.reshape(N, C * kernel_h * kernel_w, out_h * out_w)
-
-        # Use col2im to convert back to input gradient
-        grad_x_data = nm.col2im(
-            grad_col,
-            saved_x_shape,
-            saved_kernel_h,
-            saved_kernel_w,
-            stride=saved_stride[0],
-            padding=saved_padding[0],
-        )
-
-        grad_x = nm._create_result(grad_x_data)
-        if x.grad is None:
-            x.grad = grad_x
-        else:
-            x.grad._data += grad_x._data
-
-    result._backward = _backward
-    return result
+    return _max_pool_2d(x, kernel_size=kernel_size, stride=stride, padding=padding)
 
 
 class MaxPool2d(Module):

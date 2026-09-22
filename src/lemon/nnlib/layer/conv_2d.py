@@ -3,6 +3,110 @@ from lemon.nnlib.module import Module
 from lemon.nnlib.parameter import Parameter
 
 
+def _conv_2d_forward(x, weight, bias, stride, padding, dilation, groups):
+    xp = nm.get_array_module(x)
+    N, C_in, H, W = x.shape
+    C_out, C_in_per_group, kernel_h, kernel_w = weight.shape
+
+    # Validate groups parameter
+    if C_in % groups != 0:
+        raise ValueError(f"in_channels ({C_in}) must be divisible by groups ({groups})")
+    if C_out % groups != 0:
+        raise ValueError(
+            f"out_channels ({C_out}) must be divisible by groups ({groups})"
+        )
+    if C_in // groups != C_in_per_group:
+        raise ValueError(
+            f"weight shape mismatch: expected C_in/groups={C_in // groups}, got {C_in_per_group}"
+        )
+
+    # Normalize parameters to tuples
+    if isinstance(stride, int):
+        stride = (stride, stride)
+    if isinstance(padding, int):
+        padding = (padding, padding)
+    if isinstance(dilation, int):
+        dilation = (dilation, dilation)
+
+    # Calculate output dimensions
+    out_h = (H + 2 * padding[0] - dilation[0] * (kernel_h - 1) - 1) // stride[0] + 1
+    out_w = (W + 2 * padding[1] - dilation[1] * (kernel_w - 1) - 1) // stride[1] + 1
+
+    # 各グループの (im2col した入力, 平らにした重み)。groups == 1 なら1組だけ
+    C_in_g = C_in // groups
+    C_out_g = C_out // groups
+    output = xp.zeros((N, C_out, out_h * out_w), dtype=x.dtype)
+    cols, weight_flats = [], []
+    for g in range(groups):
+        col = nm.im2col(
+            x[:, g * C_in_g : (g + 1) * C_in_g, :, :],
+            kernel_h,
+            kernel_w,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+        )  # (N, C_in_g*K*K, out_h*out_w)
+        weight_flat = weight[g * C_out_g : (g + 1) * C_out_g].reshape(C_out_g, -1)
+        for i in range(N):
+            output[i, g * C_out_g : (g + 1) * C_out_g] = weight_flat @ col[i]
+        cols.append(col)
+        weight_flats.append(weight_flat)
+
+    output = output.reshape(N, C_out, out_h, out_w)
+
+    # Add bias
+    if bias is not None:
+        output = output + bias.reshape(1, -1, 1, 1)
+
+    ctx = (x.shape, weight.shape, cols, weight_flats, kernel_h, kernel_w, stride, padding, dilation, groups)
+    return output, ctx
+
+
+def _conv_2d_backward(ctx, grad, needs_grad):
+    x_shape, weight_shape, cols, weight_flats, kernel_h, kernel_w, stride, padding, dilation, groups = ctx
+    xp = nm.get_array_module(grad)
+    N, C_in, H, W = x_shape
+    C_out = weight_shape[0]
+    C_in_g = C_in // groups
+    C_out_g = C_out // groups
+
+    grad_x = xp.zeros(x_shape, dtype=grad.dtype) if needs_grad[0] else None
+    grad_weight = xp.zeros(weight_shape, dtype=grad.dtype) if needs_grad[1] else None
+    grad_bias = xp.sum(grad, axis=(0, 2, 3)) if needs_grad[2] else None
+
+    grad_flat = grad.reshape(N, C_out, -1)
+    for g in range(groups):
+        grad_g = grad_flat[:, g * C_out_g : (g + 1) * C_out_g]  # (N, C_out_g, out_h*out_w)
+        col, weight_flat = cols[g], weight_flats[g]
+
+        if needs_grad[1]:
+            grad_weight_flat = xp.zeros_like(weight_flat)
+            for i in range(N):
+                grad_weight_flat = grad_weight_flat + grad_g[i] @ col[i].T
+            grad_weight[g * C_out_g : (g + 1) * C_out_g] = grad_weight_flat.reshape(
+                C_out_g, C_in_g, kernel_h, kernel_w
+            )
+
+        if needs_grad[0]:
+            grad_col = xp.zeros_like(col)
+            for i in range(N):
+                grad_col[i] = weight_flat.T @ grad_g[i]
+            grad_x[:, g * C_in_g : (g + 1) * C_in_g] = nm.col2im(
+                grad_col,
+                (N, C_in_g, H, W),
+                kernel_h,
+                kernel_w,
+                stride=stride,
+                padding=padding,
+                dilation=dilation,
+            )
+
+    return grad_x, grad_weight, grad_bias
+
+
+_conv_2d = nm.make_op(_conv_2d_forward, _conv_2d_backward)
+
+
 def conv_2d(x, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     """
     2D Convolution (functional API with autograd support)
@@ -55,254 +159,15 @@ def conv_2d(x, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     - Each output group only connects to its corresponding input group
     - This reduces parameters by a factor of 'groups'
     """
-    # Get array module
-    xp = nm.get_array_module(x._data)
-    N, C_in, H, W = x.shape
-    C_out, C_in_per_group, kernel_h, kernel_w = weight.shape
-
-    # Validate groups parameter
-    if C_in % groups != 0:
-        raise ValueError(f"in_channels ({C_in}) must be divisible by groups ({groups})")
-    if C_out % groups != 0:
-        raise ValueError(
-            f"out_channels ({C_out}) must be divisible by groups ({groups})"
-        )
-    if C_in // groups != C_in_per_group:
-        raise ValueError(
-            f"weight shape mismatch: expected C_in/groups={C_in // groups}, got {C_in_per_group}"
-        )
-
-    # Normalize parameters to tuples
-    if isinstance(stride, int):
-        stride = (stride, stride)
-    if isinstance(padding, int):
-        padding = (padding, padding)
-    if isinstance(dilation, int):
-        dilation = (dilation, dilation)
-
-    # Calculate output dimensions
-    out_h = (H + 2 * padding[0] - dilation[0] * (kernel_h - 1) - 1) // stride[0] + 1
-    out_w = (W + 2 * padding[1] - dilation[1] * (kernel_w - 1) - 1) // stride[1] + 1
-
-    if groups == 1:
-        # Standard convolution (original implementation)
-        col = nm.im2col(
-            x._data,
-            kernel_h,
-            kernel_w,
-            stride=stride[0],
-            padding=padding[0],
-            dilation=dilation[0],
-        )  # (N, C_in*K*K, out_h*out_w)
-
-        weight_flat = weight._data.reshape(C_out, -1)  # (C_out, C_in*K*K)
-
-        output_data = xp.zeros((N, C_out, out_h * out_w), dtype=x._data.dtype)
-        for i in range(N):
-            output_data[i] = weight_flat @ col[i]  # (C_out, out_h*out_w)
-
-        output_data = output_data.reshape(N, C_out, out_h, out_w)
-
-        # Save for backward
-        saved_col = col
-        saved_weight_flat = weight_flat
-
-    else:
-        # Grouped convolution
-        C_in_per_group = C_in // groups
-        C_out_per_group = C_out // groups
-
-        output_data = xp.zeros((N, C_out, out_h, out_w), dtype=x._data.dtype)
-        saved_col_groups = []
-        saved_weight_flat_groups = []
-
-        for g in range(groups):
-            # Extract input channels for this group
-            x_group = x._data[:, g * C_in_per_group : (g + 1) * C_in_per_group, :, :]
-
-            # Convert to column matrix
-            col_group = nm.im2col(
-                x_group,
-                kernel_h,
-                kernel_w,
-                stride=stride[0],
-                padding=padding[0],
-                dilation=dilation[0],
-            )  # (N, C_in_per_group*K*K, out_h*out_w)
-
-            # Extract weight for this group
-            weight_group = weight._data[
-                g * C_out_per_group : (g + 1) * C_out_per_group, :, :, :
-            ]
-            weight_flat_group = weight_group.reshape(C_out_per_group, -1)
-
-            # Perform convolution for this group
-            for i in range(N):
-                output_data[
-                    i, g * C_out_per_group : (g + 1) * C_out_per_group, :, :
-                ] = (weight_flat_group @ col_group[i]).reshape(
-                    C_out_per_group, out_h, out_w
-                )
-
-            saved_col_groups.append(col_group)
-            saved_weight_flat_groups.append(weight_flat_group)
-
-        # Save for backward
-        saved_col = saved_col_groups
-        saved_weight_flat = saved_weight_flat_groups
-
-    # Create result
-    result = nm._create_result(output_data)
-
-    # Add bias
-    if bias is not None:
-        bias_reshaped = bias._data.reshape(1, -1, 1, 1)
-        result_data_with_bias = result._data + bias_reshaped
-        result = nm._create_result(result_data_with_bias)
-
-    # Gradient computation
-    if not nm.autograd.is_enabled() or not (
-        x.requires_grad
-        or weight.requires_grad
-        or (bias is not None and bias.requires_grad)
-    ):
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    result._prev = (x, weight) if bias is None else (x, weight, bias)
-
-    # Save variables for backward
-    saved_x_shape = x.shape
-    saved_kernel_h = kernel_h
-    saved_kernel_w = kernel_w
-    saved_stride = stride
-    saved_padding = padding
-    saved_dilation = dilation
-    saved_groups = groups
-
-    def _backward():
-        if result.grad is None:
-            return
-
-        grad_output = result.grad._data  # (N, C_out, out_h, out_w)
-
-        if saved_groups == 1:
-            # Standard convolution backward
-            grad_output_flat = grad_output.reshape(N, C_out, -1)
-
-            if weight.requires_grad:
-                grad_weight_flat = xp.zeros_like(saved_weight_flat)
-                for i in range(N):
-                    grad_weight_flat += grad_output_flat[i] @ saved_col[i].T
-                grad_weight = grad_weight_flat.reshape(weight.shape)
-                grad_weight_result = nm._create_result(grad_weight)
-                if weight.grad is None:
-                    weight.grad = grad_weight_result
-                else:
-                    weight.grad._data += grad_weight_result._data
-
-            if x.requires_grad:
-                grad_col = xp.zeros_like(saved_col)
-                for i in range(N):
-                    grad_col[i] = saved_weight_flat.T @ grad_output_flat[i]
-                grad_x_data = nm.col2im(
-                    grad_col,
-                    saved_x_shape,
-                    saved_kernel_h,
-                    saved_kernel_w,
-                    stride=saved_stride[0],
-                    padding=saved_padding[0],
-                    dilation=saved_dilation[0],
-                )
-                grad_x = nm._create_result(grad_x_data)
-                if x.grad is None:
-                    x.grad = grad_x
-                else:
-                    x.grad._data += grad_x._data
-
-        else:
-            # Grouped convolution backward
-            C_in_per_group = C_in // saved_groups
-            C_out_per_group = C_out // saved_groups
-
-            if weight.requires_grad:
-                grad_weight_data = xp.zeros_like(weight._data)
-
-            if x.requires_grad:
-                grad_x_data = xp.zeros(saved_x_shape, dtype=x._data.dtype)
-
-            for g in range(saved_groups):
-                grad_output_group = grad_output[
-                    :, g * C_out_per_group : (g + 1) * C_out_per_group, :, :
-                ]
-                grad_output_flat_group = grad_output_group.reshape(
-                    N, C_out_per_group, -1
-                )
-
-                if weight.requires_grad:
-                    grad_weight_flat_group = xp.zeros_like(saved_weight_flat[g])
-                    for i in range(N):
-                        grad_weight_flat_group += (
-                            grad_output_flat_group[i] @ saved_col[g][i].T
-                        )
-                    grad_weight_data[
-                        g * C_out_per_group : (g + 1) * C_out_per_group, :, :, :
-                    ] = grad_weight_flat_group.reshape(
-                        C_out_per_group, C_in_per_group, saved_kernel_h, saved_kernel_w
-                    )
-
-                if x.requires_grad:
-                    grad_col_group = xp.zeros_like(saved_col[g])
-                    for i in range(N):
-                        grad_col_group[i] = (
-                            saved_weight_flat[g].T @ grad_output_flat_group[i]
-                        )
-
-                    x_group_shape = (
-                        N,
-                        C_in_per_group,
-                        saved_x_shape[2],
-                        saved_x_shape[3],
-                    )
-                    grad_x_group_data = nm.col2im(
-                        grad_col_group,
-                        x_group_shape,
-                        saved_kernel_h,
-                        saved_kernel_w,
-                        stride=saved_stride[0],
-                        padding=saved_padding[0],
-                        dilation=saved_dilation[0],
-                    )
-                    grad_x_data[
-                        :, g * C_in_per_group : (g + 1) * C_in_per_group, :, :
-                    ] = grad_x_group_data
-
-            if weight.requires_grad:
-                grad_weight_result = nm._create_result(grad_weight_data)
-                if weight.grad is None:
-                    weight.grad = grad_weight_result
-                else:
-                    weight.grad._data += grad_weight_result._data
-
-            if x.requires_grad:
-                grad_x = nm._create_result(grad_x_data)
-                if x.grad is None:
-                    x.grad = grad_x
-                else:
-                    x.grad._data += grad_x._data
-
-        # Gradient w.r.t. bias (same for both cases)
-        if bias is not None and bias.requires_grad:
-            grad_bias_data = xp.sum(grad_output, axis=(0, 2, 3))
-            grad_bias = nm._create_result(grad_bias_data)
-            if bias.grad is None:
-                bias.grad = grad_bias
-            else:
-                bias.grad._data += grad_bias._data
-
-    result._backward = _backward
-    return result
+    return _conv_2d(
+        x,
+        weight,
+        bias,
+        stride=stride,
+        padding=padding,
+        dilation=dilation,
+        groups=groups,
+    )
 
 
 class Conv2d(Module):

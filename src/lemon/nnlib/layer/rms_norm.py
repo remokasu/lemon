@@ -3,6 +3,40 @@ from lemon.nnlib.module import Module
 from lemon.nnlib.parameter import Parameter
 
 
+def _rms_norm_forward(x, weight, eps):
+    xp = nm.get_array_module(x)
+
+    ms = xp.mean(x**2, axis=-1, keepdims=True)
+    rms_inv = 1.0 / xp.sqrt(ms + eps)
+    x_norm = x * rms_inv
+
+    output = x_norm * weight if weight is not None else x_norm
+    return output, (x, x_norm, rms_inv, weight)
+
+
+def _rms_norm_backward(ctx, grad, needs_grad):
+    x, x_norm, rms_inv, weight = ctx
+    xp = nm.get_array_module(grad)
+    N = x.shape[-1]
+
+    grad_x = grad_w = None
+
+    if needs_grad[1]:
+        grad_w = xp.sum(grad * x_norm, axis=tuple(range(x.ndim - 1)))
+
+    if needs_grad[0]:
+        grad_norm = grad * weight if weight is not None else grad
+        # d/dx [x * rms_inv] = rms_inv - x^2 * rms_inv^3 / N
+        grad_x = rms_inv * (
+            grad_norm - x * rms_inv**2 * xp.sum(grad_norm * x, axis=-1, keepdims=True) / N
+        )
+
+    return grad_x, grad_w
+
+
+_rms_norm = nm.make_op(_rms_norm_forward, _rms_norm_backward)
+
+
 def rms_norm(x, weight=None, eps=1e-8):
     """
     RMS Normalization (functional API)
@@ -27,75 +61,7 @@ def rms_norm(x, weight=None, eps=1e-8):
     Tensor
         Normalized tensor with same shape as input
     """
-    xp = nm.get_array_module(x._data)
-
-    ms = xp.mean(x._data ** 2, axis=-1, keepdims=True)
-    rms_inv = 1.0 / xp.sqrt(ms + eps)
-    x_norm_data = x._data * rms_inv
-
-    if weight is not None:
-        output_data = x_norm_data * weight._data
-    else:
-        output_data = x_norm_data
-
-    result = nm._create_result(output_data)
-
-    requires_grad_list = [x.requires_grad]
-    if weight is not None:
-        requires_grad_list.append(weight.requires_grad)
-
-    if not nm.autograd.is_enabled() or not any(requires_grad_list):
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    prev_list = [x]
-    if weight is not None:
-        prev_list.append(weight)
-    result._prev = tuple(prev_list)
-
-    saved_x_norm = x_norm_data
-    saved_rms_inv = rms_inv
-    saved_has_weight = weight is not None
-
-    def _backward():
-        if result.grad is None:
-            return
-
-        grad_out = result.grad._data
-        N = x.shape[-1]
-
-        # Gradient w.r.t. weight
-        if saved_has_weight and weight.requires_grad:
-            grad_w = xp.sum(grad_out * saved_x_norm,
-                            axis=tuple(range(x.ndim - 1)))
-            g = nm._create_result(grad_w)
-            if weight.grad is None:
-                weight.grad = g
-            else:
-                weight.grad._data += g._data
-
-        # Gradient w.r.t. input x
-        if x.requires_grad:
-            if saved_has_weight:
-                grad_norm = grad_out * weight._data
-            else:
-                grad_norm = grad_out
-
-            # d/dx [x * rms_inv] = rms_inv - x^2 * rms_inv^3 / N
-            grad_x = saved_rms_inv * (
-                grad_norm
-                - x._data * saved_rms_inv ** 2
-                * xp.sum(grad_norm * x._data, axis=-1, keepdims=True) / N
-            )
-            g = nm._create_result(grad_x)
-            if x.grad is None:
-                x.grad = g
-            else:
-                x.grad._data += g._data
-
-    result._backward = _backward
-    return result
+    return _rms_norm(x, weight, eps=eps)
 
 
 class RMSNorm(Module):

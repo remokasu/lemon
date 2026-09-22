@@ -31,10 +31,13 @@ class Normalize:
         self.std = std
 
     def __call__(self, x):
-        xp = nm.get_array_module(x if not hasattr(x, "_data") else x._data)
+        # データの前処理（計算グラフの外）なので、生の配列で計算して同じ型に包んで返す
+        data = x._data if isinstance(x, nm.NumType) else x
+        xp = nm.get_array_module(data)
         mean = xp.array(self.mean, dtype=xp.float32)
         std = xp.array(self.std, dtype=xp.float32)
-        return (x - mean) / std
+        out = (data - mean) / std
+        return type(x)(out) if isinstance(x, nm.NumType) else out
 
     def __repr__(self):
         return f"{self.__class__.__name__}(mean={self.mean}, std={self.std})"

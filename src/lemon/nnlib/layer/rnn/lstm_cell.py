@@ -132,7 +132,11 @@ class LSTMCell(Module):
         gates = x @ self.weight_ih.data + h @ self.weight_hh.data
 
         if self.use_bias:
-            gates = gates + self.bias_ih.data + self.bias_hh.data
+            gates = (
+                gates
+                + nm.broadcast_to(self.bias_ih.data, gates.shape)
+                + nm.broadcast_to(self.bias_hh.data, gates.shape)
+            )
 
         # ゲートを分割: (batch, 4*hidden_size) -> 4 x (batch, hidden_size)
         # gates[:, 0:h] = input gate
@@ -145,10 +149,11 @@ class LSTMCell(Module):
         o = gates[:, 3 * self.hidden_size : 4 * self.hidden_size]
 
         # 活性化関数を適用
-        i = 1 / (1 + nm.exp(-i))  # sigmoid(i)
-        f = 1 / (1 + nm.exp(-f))  # sigmoid(f)
+        one = nm.ones_like(i)
+        i = 1 / (one + nm.exp(-i))  # sigmoid(i)
+        f = 1 / (one + nm.exp(-f))  # sigmoid(f)
         g = nm.tanh(g)  # tanh(g)
-        o = 1 / (1 + nm.exp(-o))  # sigmoid(o)
+        o = 1 / (one + nm.exp(-o))  # sigmoid(o)
 
         # セル状態と隠れ状態を更新
         c_next = f * c + i * g

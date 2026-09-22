@@ -36,7 +36,7 @@ def gelu(x):
     It provides smooth, non-monotonic activation with better gradient flow
     compared to ReLU.
     """
-    return 0.5 * x * (1 + nm.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
+    return 0.5 * x * (nm.ones_like(x) + nm.tanh(np.sqrt(2 / np.pi) * (x + 0.044715 * x**3)))
 
 
 class Gelu(Module):

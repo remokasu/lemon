@@ -27,7 +27,8 @@ def binary_linear(x, weight, bias=None):
     w_b = sign(weight)
     output = x @ w_b
     if bias is not None:
-        output = output + bias
+        # X W + 1 bᵀ: バイアスを各行に明示的に広げて足す
+        output = output + nm.broadcast_to(bias, output.shape)
     return output
 
 

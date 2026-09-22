@@ -9,6 +9,7 @@ if parent_dir not in sys.path:
 import pytest
 import numpy as np
 from lemon.numlib import *
+from lemon.numlib import TypeMismatchError, DimensionError
 
 
 class TestMathematicalTypeCorrectness:
@@ -182,14 +183,16 @@ class TestMathematicalTypeCorrectness:
         assert result.shape == (3, 1)
 
     def test_vector_matrix_broadcasting(self):
-        """ベクトルと行列のブロードキャスト"""
+        """ベクトル (2, 1) と行列 (2, 3) の和は定義されない（明示すれば計算できる）"""
         v = vector([1, 2])  # (2, 1)
         m = matrix([[3, 4, 5], [6, 7, 8]])  # (2, 3)
 
-        # (2, 1) + (2, 3) = (2, 3)
-        result = v + m
+        with pytest.raises(DimensionError):
+            v + m
+        result = broadcast_to(v, m.shape) + m
         assert isinstance(result, Matrix)
         assert result.shape == (2, 3)
+
 
     # ========================================
     # 数学的に無効な操作の検出

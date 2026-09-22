@@ -6,7 +6,7 @@ def sigmoid(x):
     """
     Sigmoid activation function: σ(x) = 1 / (1 + exp(-x))
     """
-    return 1 / (1 + nm.exp(-x))
+    return 1 / (nm.ones_like(x) + nm.exp(-x))
 
 
 class Sigmoid(Module):

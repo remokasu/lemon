@@ -36,7 +36,7 @@ def selu(x, alpha=1.67326324, gamma=1.05070098):
     SELU enables self-normalizing properties in neural networks.
     Use with lecun_normal initialization for best results.
     """
-    return gamma * nm.where(x > 0, x, alpha * (nm.exp(x) - 1))
+    return gamma * nm.where(x > 0, x, alpha * (nm.exp(x) - nm.ones_like(x)))
 
 
 class Selu(Module):

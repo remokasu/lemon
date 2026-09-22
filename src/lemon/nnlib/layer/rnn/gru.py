@@ -135,6 +135,7 @@ class GRU(Module):
         seq_len, batch_size, _ = x.shape
 
         # 隠れ状態の初期化
+        # 並びは LSTM と同じ [層0の順方向, 層0の逆方向, 層1の順方向, ...]
         if h is None:
             h_0 = nm.zeros(
                 self.num_layers * self.num_directions, batch_size, self.hidden_size
@@ -142,65 +143,52 @@ class GRU(Module):
         else:
             h_0 = h
 
-        # 順方向の処理
-        h_forward = [h_0[i] for i in range(self.num_layers)]
+        # レイヤーごとに処理する。各レイヤーでは、順方向と逆方向をそれぞれ全時刻処理し、
+        # 連結したものを次のレイヤーの入力にする
+        layer_input = x  # (seq_len, batch, input_size)
+        h_list = []
 
-        outputs_forward = []
-        for t in range(seq_len):
-            x_t = x[t]
+        for layer in range(self.num_layers):
+            # 順方向の処理
+            h_forward = h_0[layer * self.num_directions]
+            outputs_forward = []
+            for t in range(seq_len):
+                h_forward = self.cells_forward[layer](layer_input[t], h_forward)
+                outputs_forward.append(h_forward)
+            output_forward = nm.stack(outputs_forward, axis=0)  # (seq_len, batch, hidden)
 
-            for layer in range(self.num_layers):
-                h_forward[layer] = self.cells_forward[layer](x_t, h_forward[layer])
-                x_t = h_forward[layer]
+            # 双方向の場合、逆方向も処理
+            if self.bidirectional:
+                h_backward = h_0[layer * self.num_directions + 1]
+                outputs_backward = []
+                for t in range(seq_len - 1, -1, -1):
+                    h_backward = self.cells_backward[layer](layer_input[t], h_backward)
+                    outputs_backward.append(h_backward)
+                outputs_backward.reverse()
+                output_backward = nm.stack(outputs_backward, axis=0)
 
-                if layer < self.num_layers - 1 and self.dropout_p > 0:
-                    x_t = dropout(x_t, p=self.dropout_p, training=train.is_on())
+                # 順方向と逆方向を連結
+                layer_output = nm.concatenate([output_forward, output_backward], axis=2)
+                h_list.extend([h_forward, h_backward])
+            else:
+                layer_output = output_forward
+                h_list.append(h_forward)
 
-            outputs_forward.append(x_t)
+            # ドロップアウト（最後のレイヤー以外）
+            if layer < self.num_layers - 1 and self.dropout_p > 0:
+                layer_output = nm.stack(
+                    [
+                        dropout(layer_output[t], p=self.dropout_p, training=train.is_on())
+                        for t in range(seq_len)
+                    ],
+                    axis=0,
+                )
 
-        output_forward = nm.stack(outputs_forward, axis=0)
+            # 次のレイヤーへの入力
+            layer_input = layer_output
 
-        # 双方向の場合、逆方向も処理
-        if self.bidirectional:
-            h_backward = [h_0[self.num_layers + i] for i in range(self.num_layers)]
-
-            # 逆方向用に各レイヤーの出力を保存
-            layer_outputs_backward = [[] for _ in range(self.num_layers)]
-
-            for t in range(seq_len - 1, -1, -1):
-                # 第1層は元の入力から、第2層以降は前の層の出力から
-                for layer in range(self.num_layers):
-                    if layer == 0:
-                        x_t = x[t]
-                    else:
-                        # 前の層の同じタイムステップの出力を使う
-                        prev_forward = output_forward[t, :, :]
-                        prev_backward = layer_outputs_backward[layer - 1][-1]
-                        x_t = nm.concatenate([prev_forward, prev_backward], axis=1)
-
-                    h_backward[layer] = self.cells_backward[layer](
-                        x_t, h_backward[layer]
-                    )
-                    output_t = h_backward[layer]
-
-                    if layer < self.num_layers - 1 and self.dropout_p > 0:
-                        output_t = dropout(
-                            output_t, p=self.dropout_p, training=train.is_on()
-                        )
-
-                    layer_outputs_backward[layer].append(output_t)
-
-            # 最終層の出力を取得（逆順なので反転）
-            final_backward = layer_outputs_backward[-1]
-            final_backward.reverse()
-            output_backward = nm.stack(final_backward, axis=0)
-
-            # 順方向と逆方向を連結
-            output = nm.concatenate([output_forward, output_backward], axis=2)
-            h_n = nm.stack(h_forward + h_backward, axis=0)
-        else:
-            output = output_forward
-            h_n = nm.stack(h_forward, axis=0)
+        output = layer_output
+        h_n = nm.stack(h_list, axis=0)
 
         # batch_firstの場合、(seq, batch, feature) -> (batch, seq, feature)に戻す
         if self.batch_first:

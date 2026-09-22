@@ -186,14 +186,16 @@ class TestIndexing:
         """Test getting row from matrix"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         row = m[0, :]
-        expected = np.array([1, 2, 3])
+        assert isinstance(row, nm.RowVector)  # e₀ᵀA
+        expected = np.array([[1, 2, 3]])
         np.testing.assert_array_equal(row._data, expected)
 
     def test_getitem_column_slice(self):
         """Test getting column from matrix"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         col = m[:, 0]
-        expected = np.array([1, 4])
+        assert isinstance(col, nm.Vector)  # Ae₀
+        expected = np.array([[1], [4]])
         np.testing.assert_array_equal(col._data, expected)
 
     def test_getitem_submatrix(self):

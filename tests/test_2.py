@@ -9,6 +9,7 @@ if parent_dir not in sys.path:
 import pytest
 import numpy as np
 from lemon.numlib import *
+from lemon.numlib import TypeMismatchError, DimensionError
 
 
 class TestChainRule:
@@ -289,24 +290,23 @@ class TestVectorMatrixGradients:
         np.testing.assert_allclose(B.grad.data, expected_B_grad, rtol=1e-6)
 
     def test_broadcasting_gradient(self):
-        """Test gradient with broadcasting"""
-        # Scalar + Vector (broadcasting)
+        """Test gradient through explicit c·1 (scalar + vector is not defined)"""
         x = real(2.0)
         v = vec([1.0, 2.0, 3.0])
 
-        result = x + v  # [3, 4, 5]
+        with pytest.raises(TypeMismatchError):
+            x + v
+
+        result = x * ones_like(v) + v  # [3, 4, 5]
         loss = result.sum()  # 12
 
         loss.backward()
 
-        # Gradient of x should be sum of gradients (due to broadcasting)
-        print(x.grad)
+        # Gradient of x is the sum of the gradients of each component
         assert abs(x.grad.item() - 3.0) < 1e-6
 
         # Gradient of v should be ones
-        np.testing.assert_allclose(
-            v.grad.data, np.ones((3, 1)), rtol=1e-6
-        )  # (3, 1)形状に修正
+        np.testing.assert_allclose(v.grad.data, np.ones((3, 1)), rtol=1e-6)
 
     def test_reshape_gradient(self):
         """Test gradient flows through reshape"""

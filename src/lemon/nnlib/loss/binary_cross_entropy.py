@@ -24,11 +24,12 @@ def binary_cross_entropy(y_pred, y_true, reduction="mean"):
         Loss value
     """
     eps = 1e-10
+    one = nm.ones_like(y_pred)
     y_pred_clamped = y_pred
-    log_pred = nm.log(y_pred_clamped + eps)
-    log_one_minus_pred = nm.log(1 - y_pred_clamped + eps)
+    log_pred = nm.log(y_pred_clamped + eps * one)
+    log_one_minus_pred = nm.log(one - y_pred_clamped + eps * one)
 
-    loss = -(y_true * log_pred + (1 - y_true) * log_one_minus_pred)
+    loss = -(y_true * log_pred + (one - y_true) * log_one_minus_pred)
 
     if reduction == "mean":
         return nm.mean(loss)

@@ -2,6 +2,31 @@ from lemon.nnlib.module import Module
 import lemon.numlib as nm
 
 
+
+def _avg_pool_2d_forward(x, kernel_h, kernel_w, stride, padding, out_h, out_w):
+    N, C = x.shape[:2]
+    col = nm.im2col(x, kernel_h, kernel_w, stride=stride, padding=padding)
+    col = col.reshape(N, C, kernel_h * kernel_w, out_h * out_w)
+    output = col.mean(axis=2).reshape(N, C, out_h, out_w)
+    return output, (x.shape, kernel_h, kernel_w, stride, padding)
+
+
+def _avg_pool_2d_backward(ctx, grad, needs_grad):
+    x_shape, kernel_h, kernel_w, stride, padding = ctx
+    xp = nm.get_array_module(grad)
+    N, C = x_shape[:2]
+    K = kernel_h * kernel_w
+    # 窓の平均の勾配: 出力の勾配を窓の各位置に 1/K ずつ配る
+    grad_flat = grad.reshape(N, C, 1, -1) / K
+    grad_col = xp.broadcast_to(grad_flat, (N, C, K, grad_flat.shape[-1]))
+    grad_col = grad_col.reshape(N, C * K, -1)
+    grad_x = nm.col2im(grad_col, x_shape, kernel_h, kernel_w, stride=stride, padding=padding)
+    return (grad_x,)
+
+
+_avg_pool_2d = nm.make_op(_avg_pool_2d_forward, _avg_pool_2d_backward)
+
+
 def avg_pool_2d(x, kernel_size, stride=None, padding=0):
     """
     2D Average pooling (functional API with autograd support)
@@ -41,7 +66,6 @@ def avg_pool_2d(x, kernel_size, stride=None, padding=0):
     The gradient is distributed equally to all positions in each pooling window.
     Uses numlib's mean function which supports autograd.
     """
-    xp = nm.get_array_module(x._data)
     N, C, H, W = x.shape
 
     # Normalize parameters
@@ -61,18 +85,16 @@ def avg_pool_2d(x, kernel_size, stride=None, padding=0):
     out_h = (H + 2 * padding[0] - kernel_h) // stride[0] + 1
     out_w = (W + 2 * padding[1] - kernel_w) // stride[1] + 1
 
-    # Use im2col
-    col_data = nm.im2col(
-        x._data, kernel_h, kernel_w, stride=stride[0], padding=padding[0]
+    # im2col で窓を取り出して平均する（勾配は _avg_pool_2d_backward で入力に戻す）
+    return _avg_pool_2d(
+        x,
+        kernel_h=kernel_h,
+        kernel_w=kernel_w,
+        stride=stride,
+        padding=padding,
+        out_h=out_h,
+        out_w=out_w,
     )
-    col_data = col_data.reshape(N, C, kernel_h * kernel_w, out_h * out_w)
-
-    # Take mean using numlib (supports autograd)
-    col = nm.tensor(col_data)
-    out = nm.mean(col, axis=2)  # (N, C, out_h*out_w)
-    out = nm.reshape(out, (N, C, out_h, out_w))
-
-    return out
 
 
 class AvgPool2d(Module):

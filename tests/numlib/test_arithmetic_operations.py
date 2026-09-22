@@ -36,17 +36,21 @@ class TestAddition:
         np.testing.assert_array_equal(z._data, expected)
 
     def test_add_scalar_to_vector(self):
-        """Test adding scalar to vector (broadcasting)"""
+        """Vector + scalar is not defined; add c·1 explicitly"""
         x = nm.Vector([1, 2, 3])
         y = nm.Real(10.0)
-        z = x + y
+        with pytest.raises(nm.TypeMismatchError):
+            x + y
+        z = x + y * nm.ones_like(x)
         np.testing.assert_array_equal(z._data.flatten(), [11, 12, 13])
 
     def test_add_vector_to_scalar(self):
-        """Test adding vector to scalar (broadcasting)"""
+        """scalar + Vector is not defined; add c·1 explicitly"""
         x = nm.Real(10.0)
         y = nm.Vector([1, 2, 3])
-        z = x + y
+        with pytest.raises(nm.TypeMismatchError):
+            x + y
+        z = x * nm.ones_like(y) + y
         np.testing.assert_array_equal(z._data.flatten(), [11, 12, 13])
 
     def test_add_python_int_to_scalar(self):
@@ -62,10 +66,13 @@ class TestAddition:
         assert float(z._data) == 5.5
 
     def test_add_different_shapes_broadcasts(self):
-        """Test addition with different shapes broadcasts correctly"""
+        """RowVector (1, 3) + Vector (3, 1) is not defined (no implicit broadcasting)"""
         x = nm.Matrix([[1, 2, 3]])  # (1, 3)
         y = nm.Vector([10, 20, 30])  # (3, 1)
-        z = x + y
+        with pytest.raises(nm.DimensionError):
+            x + y
+        # Explicit broadcasting gives the old result
+        z = nm.broadcast_to(x, (3, 3)) + nm.broadcast_to(y, (3, 3))
         expected = np.array([[11, 12, 13], [21, 22, 23], [31, 32, 33]])
         np.testing.assert_array_equal(z._data, expected)
 
@@ -110,10 +117,10 @@ class TestAddition:
         np.testing.assert_array_equal(y.grad._data.flatten(), [1, 1, 1])
 
     def test_add_backward_broadcast(self):
-        """Test backward pass with broadcasting"""
+        """Backward pass through explicit c·1"""
         x = nm.Vector([1, 2, 3], requires_grad=True)
         y = nm.Real(10.0, requires_grad=True)
-        z = x + y
+        z = x + y * nm.ones_like(x)
         grad_output = nm.Vector([1, 1, 1])
         z.backward(grad_output)
         np.testing.assert_array_equal(x.grad._data.flatten(), [1, 1, 1])
@@ -161,17 +168,21 @@ class TestSubtraction:
         np.testing.assert_array_equal(z._data, expected)
 
     def test_sub_scalar_from_vector(self):
-        """Test subtracting scalar from vector"""
+        """Vector - scalar is not defined; subtract c·1 explicitly"""
         x = nm.Vector([10, 20, 30])
         y = nm.Real(5.0)
-        z = x - y
+        with pytest.raises(nm.TypeMismatchError):
+            x - y
+        z = x - y * nm.ones_like(x)
         np.testing.assert_array_equal(z._data.flatten(), [5, 15, 25])
 
     def test_sub_vector_from_scalar(self):
-        """Test subtracting vector from scalar"""
+        """scalar - Vector is not defined; use c·1 explicitly"""
         x = nm.Real(10.0)
         y = nm.Vector([1, 2, 3])
-        z = x - y
+        with pytest.raises(nm.TypeMismatchError):
+            x - y
+        z = x * nm.ones_like(y) - y
         np.testing.assert_array_equal(z._data.flatten(), [9, 8, 7])
 
     def test_sub_python_int(self):
@@ -206,10 +217,10 @@ class TestSubtraction:
         np.testing.assert_array_equal(y.grad._data.flatten(), [-1, -1, -1])
 
     def test_sub_backward_broadcast(self):
-        """Test backward pass with broadcasting"""
+        """Backward pass through explicit c·1"""
         x = nm.Vector([10, 20, 30], requires_grad=True)
         y = nm.Real(5.0, requires_grad=True)
-        z = x - y
+        z = x - y * nm.ones_like(x)
         grad_output = nm.Vector([1, 1, 1])
         z.backward(grad_output)
         np.testing.assert_array_equal(x.grad._data.flatten(), [1, 1, 1])
@@ -806,10 +817,12 @@ class TestMixedTypeArithmetic:
         assert complex(z._data) == (4 + 2j)
 
     def test_vector_plus_scalar(self):
-        """Test Vector + Scalar (broadcasting)"""
+        """Vector + Scalar is not defined; add c·1 explicitly"""
         v = nm.Vector([1, 2, 3])
         s = nm.Real(10.0)
-        z = v + s
+        with pytest.raises(nm.TypeMismatchError):
+            v + s
+        z = v + s * nm.ones_like(v)
         np.testing.assert_array_equal(z._data.flatten(), [11, 12, 13])
 
     def test_matrix_times_scalar(self):

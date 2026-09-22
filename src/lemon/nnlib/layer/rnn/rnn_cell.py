@@ -127,7 +127,11 @@ class RNNCell(Module):
         output = x @ self.weight_ih.data + h @ self.weight_hh.data
 
         if self.use_bias:
-            output = output + self.bias_ih.data + self.bias_hh.data
+            output = (
+                output
+                + nm.broadcast_to(self.bias_ih.data, output.shape)
+                + nm.broadcast_to(self.bias_hh.data, output.shape)
+            )
 
         # 活性化関数を適用
         if self.nonlinearity == "tanh":

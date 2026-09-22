@@ -29,7 +29,7 @@ def kl_div_loss(y_pred, y_true, reduction="mean"):
         Loss value
     """
     eps = 1e-10
-    loss = y_true * (nm.log(y_true + eps) - y_pred)
+    loss = y_true * (nm.log(y_true + eps * nm.ones_like(y_pred)) - y_pred)
 
     if reduction == "mean":
         return nm.mean(loss)

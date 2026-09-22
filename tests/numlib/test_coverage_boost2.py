@@ -418,20 +418,25 @@ class TestBroadcasting:
     """Test broadcasting rules"""
 
     def test_scalar_tensor_broadcast(self):
-        """Test scalar + tensor broadcasting"""
+        """scalar + tensor is not defined; add c·1 explicitly"""
         s = nm.Real(5.0)
         t = nm.Tensor([1, 2, 3])
 
-        result = s + t
+        with pytest.raises(nm.TypeMismatchError):
+            s + t
+        result = s * nm.ones_like(t) + t
         expected = np.array([6, 7, 8])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_matrix_vector_broadcast(self):
-        """Test matrix + vector broadcasting"""
+        """Matrix + Tensor is not defined (different spaces, different shapes)"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         v = nm.Tensor([10, 20, 30])
 
-        result = m + v
+        with pytest.raises(nm.TypeMismatchError):
+            m + v
+        # Explicit: broadcast the row and read it in the same space as m
+        result = m + nm.matrix(nm.broadcast_to(v, m.shape))
         expected = np.array([[11, 22, 33], [14, 25, 36]])
         np.testing.assert_array_equal(result._data, expected)
 

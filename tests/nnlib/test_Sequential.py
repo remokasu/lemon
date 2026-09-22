@@ -22,7 +22,7 @@ def test_sequential():
 
     class AddOne(nl.Module):
         def forward(self, x):
-            return x + 1
+            return x + nm.ones_like(x)
 
     seq = nl.Sequential(Identity(), AddOne(), AddOne())
 

@@ -27,7 +27,7 @@ def softsign(x):
     >>> y = softsign(x)
     >>> # y = [-0.5, 0.0, 0.5]
     """
-    return x / (1 + nm.abs(x))
+    return x / (nm.ones_like(x) + nm.abs(x))
 
 
 class Softsign(Module):

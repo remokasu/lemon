@@ -27,8 +27,12 @@ b2 = lm.zeros(1)
 
 
 def network(x):
-    h = lm.relu(x @ W1 + b1)
-    return lm.sigmoid(h @ W2 + b2)
+    # バイアスは各行に明示的に広げて足す（X W + 1 bᵀ）
+    # Biases are broadcast to every row explicitly (X W + 1 bᵀ)
+    h = x @ W1
+    h = lm.relu(h + lm.broadcast_to(b1, h.shape))
+    o = h @ W2
+    return lm.sigmoid(o + lm.broadcast_to(b2, o.shape))
 
 
 # Training / 訓練

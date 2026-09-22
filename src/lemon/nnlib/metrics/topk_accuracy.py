@@ -31,23 +31,19 @@ class TopKAccuracy(Metric):
         self.k = k
 
     def __call__(self, y_pred, y_true):
-        # Get top k predictions
-        batch_size = y_pred.shape[0]
-        # Simple approach: sort and take top k indices
-        top_k_indices = nm.argsort(y_pred, axis=-1)[:, -self.k :]
+        # 評価は計算グラフの外の処理なので、生の配列で計算する
+        pred = y_pred._data if isinstance(y_pred, nm.NumType) else y_pred
+        xp = nm.get_array_module(pred)
+        pred = xp.asarray(pred)
+        true = y_true._data if isinstance(y_true, nm.NumType) else y_true
+        true = xp.asarray(true).reshape(-1).astype(int)
 
-        # Flatten y_true
-        y_true_flat = y_true.reshape(-1) if len(y_true.shape) > 1 else y_true
+        # Top-k indices along the class axis
+        top_k_indices = xp.argsort(pred, axis=-1)[:, -self.k :]
 
         # Check if true label is in top k
-        correct = 0
-        for i in range(batch_size):
-            if int(y_true_flat[i].item()) in [
-                int(idx.item()) for idx in top_k_indices[i]
-            ]:
-                correct += 1
-
-        return float(correct / batch_size) * 100.0
+        correct = (top_k_indices == true[:, None]).any(axis=1)
+        return float(correct.mean()) * 100.0
 
     def name(self):
         return f"top{self.k}_accuracy"

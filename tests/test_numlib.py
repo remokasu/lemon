@@ -578,10 +578,10 @@ def test_matrix_indexing():
     assert isinstance(elem, Scalar)
     assert elem.item() == 1
 
-    # Row -> Vector
+    # Row -> RowVector (e₀ᵀA)
     row = m[0]
-    assert isinstance(row, Tensor)
-    assert row._data.tolist() == [1, 2, 3]
+    assert isinstance(row, RowVector)
+    assert row._data.tolist() == [[1, 2, 3]]
 
     # Submatrix -> Matrix
     submat = m[0:2, 0:2]
@@ -631,9 +631,9 @@ def test_tensor_reshape():
     """Test Tensor reshape returns correct types"""
     t = tensor([1, 2, 3, 4, 5, 6])
 
-    # Reshape to matrix
+    # Reshape of a Tensor stays a Tensor (no implicit Matrix)
     m = t.reshape(2, 3)
-    assert isinstance(m, Matrix)
+    assert type(m) is Tensor
     assert m.shape == (2, 3)
 
     # Reshape to vector

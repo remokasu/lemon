@@ -177,10 +177,10 @@ def kaiming_uniform_(tensor, a=0, mode="fan_in", nonlinearity="relu"):
     # In-place modification
     # uniform(a, b) = a + (b - a) * rand()
     if isinstance(tensor, Parameter):
-        tensor.data = -bound + (2 * bound) * nm.rand(*tensor.shape)
+        tensor.data = nm.rand(*tensor.shape, low=-bound, high=bound)
     else:
         # Direct tensor modification
-        new_data = -bound + (2 * bound) * nm.rand(*tensor.shape)
+        new_data = nm.rand(*tensor.shape, low=-bound, high=bound)
         tensor.data = new_data
 
     return tensor
@@ -274,9 +274,9 @@ def xavier_uniform_(tensor, gain=1.0):
     # In-place modification
     # uniform(a, b) = a + (b - a) * rand()
     if isinstance(tensor, Parameter):
-        tensor.data = -bound + (2 * bound) * nm.rand(*tensor.shape)
+        tensor.data = nm.rand(*tensor.shape, low=-bound, high=bound)
     else:
-        new_data = -bound + (2 * bound) * nm.rand(*tensor.shape)
+        new_data = nm.rand(*tensor.shape, low=-bound, high=bound)
         tensor.data = new_data
 
     return tensor
@@ -440,9 +440,9 @@ def normal_(tensor, mean=0.0, std=1.0):
     >>> nl.init.normal_(fc.weight, mean=0, std=0.01)
     """
     if isinstance(tensor, Parameter):
-        tensor.data = nm.randn(*tensor.shape) * std + mean
+        tensor.data = nm.randn(*tensor.shape) * std + mean * nm.ones(tensor.shape)
     else:
-        tensor.data = nm.randn(*tensor.shape) * std + mean
+        tensor.data = nm.randn(*tensor.shape) * std + mean * nm.ones(tensor.shape)
 
     return tensor
 
@@ -473,8 +473,8 @@ def uniform_(tensor, a=0.0, b=1.0):
     """
     # uniform(a, b) = a + (b - a) * rand()
     if isinstance(tensor, Parameter):
-        tensor.data = a + (b - a) * nm.rand(*tensor.shape)
+        tensor.data = nm.rand(*tensor.shape, low=a, high=b)
     else:
-        tensor.data = a + (b - a) * nm.rand(*tensor.shape)
+        tensor.data = nm.rand(*tensor.shape, low=a, high=b)
 
     return tensor

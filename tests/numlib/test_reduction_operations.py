@@ -26,17 +26,19 @@ class TestSum:
         assert float(result._data) == 10.0
 
     def test_sum_matrix_axis0(self):
-        """Test sum along axis 0 (columns)"""
+        """Test sum along axis 0 (columns): 1ᵀA is a row vector"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         result = nm.sum(m, axis=0)
-        expected = np.array([5, 7, 9])
+        assert isinstance(result, nm.RowVector)
+        expected = np.array([[5, 7, 9]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_sum_matrix_axis1(self):
-        """Test sum along axis 1 (rows)"""
+        """Test sum along axis 1 (rows): A1 is a column vector"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         result = nm.sum(m, axis=1)
-        expected = np.array([6, 15])
+        assert isinstance(result, nm.Vector)
+        expected = np.array([[6], [15]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_sum_keepdims_true(self):
@@ -49,8 +51,14 @@ class TestSum:
 
     def test_sum_keepdims_false(self):
         """Test sum with keepdims=False (default)"""
+        # Matrix keeps its orientation even with keepdims=False: A1 is (2, 1)
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         result = nm.sum(m, axis=1, keepdims=False)
+        assert result.shape == (2, 1)
+
+        # Tensor follows keepdims
+        t = nm.tensor(np.array([[1, 2, 3], [4, 5, 6]]))
+        result = nm.sum(t, axis=1, keepdims=False)
         assert result.shape == (2,)
 
     def test_sum_backward_vector(self):
@@ -84,7 +92,7 @@ class TestSum:
         """Test backward pass for sum along axis 1"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]], requires_grad=True)
         result = nm.sum(m, axis=1)
-        grad_output = nm.Tensor([1, 2])
+        grad_output = nm.vector([1, 2])
         result.backward(grad_output)
         # Gradient should broadcast to original shape
         expected = np.array([[1, 1, 1], [2, 2, 2]])
@@ -116,14 +124,16 @@ class TestMean:
         """Test mean along axis 0"""
         m = nm.Matrix([[1, 2, 3], [5, 6, 7]])
         result = nm.mean(m, axis=0)
-        expected = np.array([3, 4, 5])
+        assert isinstance(result, nm.RowVector)
+        expected = np.array([[3, 4, 5]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_mean_matrix_axis1(self):
         """Test mean along axis 1"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]])
         result = nm.mean(m, axis=1)
-        expected = np.array([2, 5])
+        assert isinstance(result, nm.Vector)
+        expected = np.array([[2], [5]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_mean_keepdims_true(self):
@@ -166,7 +176,7 @@ class TestMean:
         """Test backward pass for mean along axis 1"""
         m = nm.Matrix([[1, 2, 3], [4, 5, 6]], requires_grad=True)
         result = nm.mean(m, axis=1)
-        grad_output = nm.Tensor([1, 1])
+        grad_output = nm.vector([1, 1])
         result.backward(grad_output)
         # Gradient should be 1/3 (3 columns) for each element
         expected = np.array([[1 / 3, 1 / 3, 1 / 3], [1 / 3, 1 / 3, 1 / 3]])
@@ -282,14 +292,16 @@ class TestTensorReductionMethods:
         """Test max method along axis 0"""
         m = nm.Matrix([[1, 2, 3], [6, 5, 4]])
         result = m.max(axis=0)
-        expected = np.array([6, 5, 4])
+        assert isinstance(result, nm.RowVector)
+        expected = np.array([[6, 5, 4]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_max_method_axis1(self):
         """Test max method along axis 1"""
         m = nm.Matrix([[1, 2, 3], [6, 5, 4]])
         result = m.max(axis=1)
-        expected = np.array([3, 6])
+        assert isinstance(result, nm.Vector)
+        expected = np.array([[3], [6]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_max_method_keepdims(self):
@@ -316,7 +328,8 @@ class TestTensorReductionMethods:
         """Test min method along axis 0"""
         m = nm.Matrix([[1, 2, 3], [6, 5, 4]])
         result = m.min(axis=0)
-        expected = np.array([1, 2, 3])
+        assert isinstance(result, nm.RowVector)
+        expected = np.array([[1, 2, 3]])
         np.testing.assert_array_equal(result._data, expected)
 
     def test_argmax_method_vector(self):

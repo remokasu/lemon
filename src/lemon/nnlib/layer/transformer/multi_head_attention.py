@@ -4,58 +4,6 @@ from lemon.nnlib.module import Module
 from lemon.nnlib.parameter import Parameter
 
 
-def _batched_matmul(x, y):
-    """
-    Batched matrix multiplication supporting N-dimensional tensors.
-    Computes x @ y with autograd support.
-
-    Parameters
-    ----------
-    x : Tensor  shape (..., m, k)
-    y : Tensor  shape (..., k, n)
-
-    Returns
-    -------
-    Tensor  shape (..., m, n)
-    """
-    xp = nm.get_array_module(x._data)
-    output_data = xp.matmul(x._data, y._data)
-    result = nm._create_result(output_data)
-
-    if not nm.autograd.is_enabled() or not (x.requires_grad or y.requires_grad):
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    result._prev = (x, y)
-
-    def _backward():
-        if result.grad is None:
-            return
-        grad = result.grad._data
-
-        if x.requires_grad:
-            # dL/dx = grad @ y^T
-            grad_x = xp.matmul(grad, y._data.swapaxes(-1, -2))
-            g = nm._create_result(grad_x)
-            if x.grad is None:
-                x.grad = g
-            else:
-                x.grad._data += g._data
-
-        if y.requires_grad:
-            # dL/dy = x^T @ grad
-            grad_y = xp.matmul(x._data.swapaxes(-1, -2), grad)
-            g = nm._create_result(grad_y)
-            if y.grad is None:
-                y.grad = g
-            else:
-                y.grad._data += g._data
-
-    result._backward = _backward
-    return result
-
-
 class MultiHeadAttention(Module):
     """
     Multi-Head Self/Cross Attention
@@ -134,9 +82,9 @@ class MultiHeadAttention(Module):
         V = nm.matmul(value, self.W_v.data)
 
         if self.use_bias:
-            Q = Q + self.b_q.data
-            K = K + self.b_k.data
-            V = V + self.b_v.data
+            Q = Q + nm.broadcast_to(self.b_q.data, Q.shape)
+            K = K + nm.broadcast_to(self.b_k.data, K.shape)
+            V = V + nm.broadcast_to(self.b_v.data, V.shape)
 
         # Split heads: (batch, seq, d_model) -> (batch, heads, seq, d_k)
         def split_heads(t, seq):
@@ -149,14 +97,14 @@ class MultiHeadAttention(Module):
         # Scaled dot-product attention
         scale = math.sqrt(self.d_k)
         K_t = K.transpose(0, 1, 3, 2)  # (batch, heads, d_k, seq_k)
-        scores = _batched_matmul(Q, K_t) / scale  # (batch, heads, seq_q, seq_k)
+        scores = nm.matmul(Q, K_t) / scale  # (batch, heads, seq_q, seq_k)
 
         if mask is not None:
-            scores = nm.tensor(
-                xp.where(
-                    mask._data == 0, xp.full_like(scores._data, -1e9), scores._data
-                )
-            )
+            # 計算グラフを切らないように、微分できる nm.where でマスクする
+            # （新しい Tensor を作り直すと、Q と K に勾配が流れなくなる）
+            mask_data = mask._data if isinstance(mask, nm.NumType) else mask
+            masked = xp.broadcast_to(mask_data == 0, scores.shape)
+            scores = nm.where(masked, -1e9, scores)
 
         from lemon.nnlib.activation.softmax import softmax
 
@@ -168,7 +116,7 @@ class MultiHeadAttention(Module):
             attn_weights = dropout(attn_weights, p=self.dropout_p)
 
         # (batch, heads, seq_q, d_k)
-        context = _batched_matmul(attn_weights, V)
+        context = nm.matmul(attn_weights, V)
 
         # Merge heads: (batch, seq_q, d_model)
         context = context.transpose(0, 2, 1, 3).reshape(batch, seq_q, self.d_model)
@@ -176,7 +124,7 @@ class MultiHeadAttention(Module):
         # Output projection
         out = nm.matmul(context, self.W_o.data)
         if self.use_bias:
-            out = out + self.b_o.data
+            out = out + nm.broadcast_to(self.b_o.data, out.shape)
 
         return out
 

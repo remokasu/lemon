@@ -26,7 +26,7 @@ def hard_swish(x):
     >>> x = nm.tensor([-3.0, 0.0, 3.0])
     >>> y = hard_swish(x)
     """
-    return x * nm.maximum(0.0, nm.minimum(1.0, (x + 3) / 6))
+    return x * nm.maximum(0.0, nm.minimum(1.0, (x + 3.0 * nm.ones_like(x)) / 6))
 
 
 class HardSwish(Module):

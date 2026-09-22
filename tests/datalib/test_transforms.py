@@ -220,7 +220,7 @@ def test_compose():
     transform = Compose(
         [
             Lambda(lambda x: x * 2),
-            Lambda(lambda x: x + 1),
+            Lambda(lambda x: x + nm.ones_like(x)),
         ]
     )
 

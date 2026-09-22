@@ -56,7 +56,7 @@ class PositionalEncoding(Module):
         xp = nm.get_array_module(x._data)
         seq_len = x.shape[1]
         pe = nm.tensor(xp.asarray(self._pe[:, :seq_len, :]))
-        out = x + pe
+        out = x + nm.broadcast_to(pe, x.shape)
 
         if self.dropout_p > 0.0 and nm.train.is_enabled():
             from lemon.nnlib.layer.dropout import dropout

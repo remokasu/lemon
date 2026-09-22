@@ -21,6 +21,10 @@ from lemon.numlib import (
     div,
     pow,
     get_array_module,
+    ones_like,
+    broadcast_to,
+    TypeMismatchError,
+    DimensionError,
 )
 
 
@@ -37,12 +41,14 @@ class TestBroadcastingGradients:
     # ==============================
 
     def test_scalar_vector_broadcasting(self):
-        """Test scalar + vector broadcasting"""
-        # スカラー + ベクトル
+        """scalar + vector is not defined; the explicit c·1 gives the same gradients"""
         x = real(2.0)
         v = vec([1.0, 2.0, 3.0])
 
-        result = x + v  # [3, 4, 5]
+        with pytest.raises(TypeMismatchError):
+            x + v
+
+        result = x * ones_like(v) + v  # [3, 4, 5]
         loss = result.sum()  # 12
         loss.backward()
 
@@ -72,20 +78,20 @@ class TestBroadcastingGradients:
         np.testing.assert_allclose(m.grad.data, np.full((2, 2), 2.0), rtol=1e-6)
 
     def test_vector_matrix_broadcasting(self):
-        """Test vector broadcasting with matrix"""
+        """vector (2, 1) + matrix (2, 2) is not defined; broadcast_to gives the same gradients"""
         v = vec([1.0, 2.0])  # (2, 1) 形状
         m = mat([[1.0, 2.0], [3.0, 4.0]])  # (2, 2)
 
-        # v + m の動作
-        result = v + m  # (2, 2) - ブロードキャスト
+        with pytest.raises(DimensionError):
+            v + m
+
+        result = broadcast_to(v, m.shape) + m  # (2, 2)
         loss = result.sum()
         loss.backward()
 
-        # ベクトルの勾配
-        assert v.grad.shape == (2, 1)  # 修正: (2,) -> (2, 1)
-        np.testing.assert_allclose(
-            v.grad.data, [[2.0], [2.0]], rtol=1e-6
-        )  # 修正: 形状を合わせる
+        # ベクトルの勾配: 広げた分が足し合わされる
+        assert v.grad.shape == (2, 1)
+        np.testing.assert_allclose(v.grad.data, [[2.0], [2.0]], rtol=1e-6)
 
         # 行列の勾配
         assert m.grad.shape == (2, 2)
@@ -96,11 +102,14 @@ class TestBroadcastingGradients:
     # ==============================
 
     def test_subtraction_broadcasting(self):
-        """Test broadcasting in subtraction"""
+        """scalar - vector is not defined; the explicit c·1 gives the same gradients"""
         x = real(5.0)
         v = vec([1.0, 2.0, 3.0])
 
-        result = x - v  # [4, 3, 2]
+        with pytest.raises(TypeMismatchError):
+            x - v
+
+        result = x * ones_like(v) - v  # [4, 3, 2]
         loss = result.sum()  # 9
         loss.backward()
 
@@ -109,10 +118,8 @@ class TestBroadcastingGradients:
         assert abs(x.grad.item() - 3.0) < 1e-6
 
         # ベクトルの勾配（符号反転）
-        assert v.grad.shape == (3, 1)  # 既に正しい
-        np.testing.assert_allclose(
-            v.grad.data, [[-1.0], [-1.0], [-1.0]], rtol=1e-6
-        )  # 修正: 形状を合わせる
+        assert v.grad.shape == (3, 1)
+        np.testing.assert_allclose(v.grad.data, [[-1.0], [-1.0], [-1.0]], rtol=1e-6)
 
     def test_multiplication_broadcasting(self):
         """Test broadcasting in multiplication"""
@@ -177,12 +184,14 @@ class TestBroadcastingGradients:
     # ==============================
 
     def test_3d_broadcasting(self):
-        """Test broadcasting with 3D tensors"""
-        # (1, 3, 1) と (2, 1, 4) のブロードキャスト
-        x = tensor([[[1.0], [2.0], [3.0]]])  # (1, 3, 1)
-        y = tensor([[[1.0, 2.0, 3.0, 4.0]], [[5.0, 6.0, 7.0, 8.0]]])  # (2, 1, 4)
+        """(1, 3, 1) + (2, 1, 4) is not defined; broadcast_to gives the same gradients"""
+        x = tensor([[[1.0], [2.0], [3.0]]], requires_grad=True)  # (1, 3, 1)
+        y = tensor([[[1.0, 2.0, 3.0, 4.0]], [[5.0, 6.0, 7.0, 8.0]]], requires_grad=True)  # (2, 1, 4)
 
-        result = x + y  # (2, 3, 4)
+        with pytest.raises(DimensionError):
+            x + y
+
+        result = broadcast_to(x, (2, 3, 4)) + broadcast_to(y, (2, 3, 4))
         loss = result.sum()
         loss.backward()
 
@@ -232,28 +241,33 @@ class TestBroadcastingGradients:
         )  # 修正: 形状を合わせる
 
     def test_complex_broadcasting_chain(self):
-        """Test complex chain with multiple broadcasting operations"""
+        """Chain of scalar multiplication and explicit broadcasting"""
         a = real(2.0)
         b = vec([1.0, 2.0])
         c = mat([[1.0, 2.0], [3.0, 4.0]])
 
-        # a * b -> (2, 1)
+        # a * b -> (2, 1)（スカラー倍）
         temp1 = a * b  # [[2], [4]]
-        # temp1 * c -> (2, 2)
-        temp2 = temp1 * c  # [[2, 4], [12, 16]]
+        # (2, 1) * (2, 2) は定義されない。列ベクトルを明示的に広げてアダマール積
+        with pytest.raises(DimensionError):
+            temp1 * c
+        temp2 = broadcast_to(temp1, c.shape) * c  # [[2, 4], [12, 16]]
 
         loss = temp2.sum()  # 34
         loss.backward()
 
         # 勾配の形状チェック
         assert a.grad.shape == ()
-        assert b.grad.shape == (2, 1)  # 修正: (2,) -> (2, 1)
+        assert b.grad.shape == (2, 1)
         assert c.grad.shape == (2, 2)
 
-        # 値のチェック（複雑な連鎖なので形状のみ確認）
-        assert a.grad.item() > 0
-        assert np.all(b.grad.data > 0)
-        assert np.all(c.grad.data > 0)
+        # 値のチェック
+        # d loss / d c = broadcast(a*b) = [[2, 2], [4, 4]]
+        np.testing.assert_allclose(c.grad.data, [[2.0, 2.0], [4.0, 4.0]])
+        # d loss / d b_i = a * sum_j c_ij = 2 * [3, 7]
+        np.testing.assert_allclose(b.grad.data, [[6.0], [14.0]])
+        # d loss / d a = sum_i b_i * sum_j c_ij = 1*3 + 2*7 = 17
+        assert abs(a.grad.item() - 17.0) < 1e-6
 
 
 if __name__ == "__main__":

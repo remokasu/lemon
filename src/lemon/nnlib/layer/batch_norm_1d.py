@@ -5,6 +5,108 @@ from lemon.nnlib.parameter import Parameter
 from lemon.nnlib.train_control import train
 
 
+def _batch_norm_1d_forward(x, gamma, beta, running_mean, running_var, training, momentum, eps):
+    # 移動平均・移動分散が NumType なら、中身の配列を直接（その場で）更新する
+    if isinstance(running_mean, nm.NumType):
+        running_mean = running_mean._data
+    if isinstance(running_var, nm.NumType):
+        running_var = running_var._data
+
+    xp = nm.get_array_module(x)
+
+    if x.ndim == 2:
+        # (N, C)
+        axes = (0,)
+        param_shape = (1, -1)
+    elif x.ndim == 3:
+        # (N, C, L)
+        axes = (0, 2)
+        param_shape = (1, -1, 1)
+    else:
+        raise ValueError(
+            f"Expected 2D or 3D input, got {x.ndim}D input with shape {x.shape}"
+        )
+
+    has_running = running_mean is not None and running_var is not None
+    if training or not has_running:
+        # Batch statistics
+        mean = xp.mean(x, axis=axes, keepdims=True)
+        var = xp.var(x, axis=axes, keepdims=True)
+        batch_stats = True
+
+        # Update running statistics (in-place, outside of autograd)
+        if training and has_running:
+            mean_flat = mean.reshape(-1)
+            var_flat = var.reshape(-1)
+            if len(mean_flat) != len(running_mean):
+                raise ValueError(
+                    f"Shape mismatch: mean has {len(mean_flat)} elements, "
+                    f"but running_mean has {len(running_mean)} elements"
+                )
+            running_mean[:] = (1 - momentum) * running_mean + momentum * mean_flat
+            running_var[:] = (1 - momentum) * running_var + momentum * var_flat
+    else:
+        # Running statistics (constants)
+        mean = xp.asarray(running_mean).reshape(param_shape)
+        var = xp.asarray(running_var).reshape(param_shape)
+        batch_stats = False
+
+    x_centered = x - mean
+    std_inv = 1.0 / xp.sqrt(var + eps)
+    x_norm = x_centered * std_inv
+
+    # gamma と beta は、それぞれ渡されたものだけを掛ける・足す
+    gamma_b = gamma.reshape(param_shape) if gamma is not None else None
+    output = x_norm
+    if gamma_b is not None:
+        output = output * gamma_b
+    if beta is not None:
+        output = output + beta.reshape(param_shape)
+
+    return output, (x_centered, x_norm, std_inv, axes, gamma_b, batch_stats)
+
+
+def _batch_norm_1d_backward(ctx, grad, needs_grad):
+    x_centered, x_norm, std_inv, axes, gamma_b, batch_stats = ctx
+    xp = nm.get_array_module(grad)
+
+    grad_x = grad_gamma = grad_beta = None
+
+    if needs_grad[1]:
+        grad_gamma = xp.sum(grad * x_norm, axis=axes)
+    if needs_grad[2]:
+        grad_beta = xp.sum(grad, axis=axes)
+
+    if needs_grad[0]:
+        grad_normalized = grad * gamma_b if gamma_b is not None else grad
+        if batch_stats:
+            # 平均と分散もバッチ（x）から計算しているので、その分も微分する
+            N = 1
+            for a in axes:
+                N *= grad.shape[a]
+            grad_var = xp.sum(
+                grad_normalized * x_centered * (-0.5) * (std_inv**3),
+                axis=axes,
+                keepdims=True,
+            )
+            grad_mean = xp.sum(
+                grad_normalized * (-std_inv), axis=axes, keepdims=True
+            ) + grad_var * xp.mean(-2.0 * x_centered, axis=axes, keepdims=True)
+            grad_x = (
+                grad_normalized * std_inv
+                + grad_var * 2.0 * x_centered / N
+                + grad_mean / N
+            )
+        else:
+            # 移動平均・移動分散は定数なので、正規化は x の1次関数
+            grad_x = grad_normalized * std_inv
+
+    return grad_x, grad_gamma, grad_beta
+
+
+_batch_norm_1d = nm.make_op(_batch_norm_1d_forward, _batch_norm_1d_backward)
+
+
 def batch_norm_1d(
     x,
     gamma=None,
@@ -53,195 +155,16 @@ def batch_norm_1d(
     >>> loss = nm.sum(y)
     >>> loss.backward()
     """
-    xp = nm.get_array_module(x._data)
-
-    if x.ndim == 2:
-        # (N, C)
-        axes = (0,)
-    elif x.ndim == 3:
-        # (N, C, L)
-        axes = (0, 2)
-    else:
-        raise ValueError(
-            f"Expected 2D or 3D input, got {x.ndim}D input with shape {x.shape}"
-        )
-
-    # Calculate statistics
-    if training:
-        # Calculate batch statistics
-        mean = xp.mean(x._data, axis=axes, keepdims=True)
-        var = xp.var(x._data, axis=axes, keepdims=True)
-
-        # Update running statistics (in-place, outside of autograd)
-        if running_mean is not None and running_var is not None:
-            # Squeeze to get scalar values for each feature
-            mean_scalar = xp.squeeze(mean)
-            var_scalar = xp.squeeze(var)
-
-            # Convert to numpy if needed
-            if hasattr(mean_scalar, "_data"):
-                mean_scalar = mean_scalar._data
-            if hasattr(var_scalar, "_data"):
-                var_scalar = var_scalar._data
-
-            # Ensure proper shape (1D array)
-            mean_scalar = np.atleast_1d(mean_scalar)
-            var_scalar = np.atleast_1d(var_scalar)
-
-            # Flatten if necessary
-            if mean_scalar.ndim > 1:
-                mean_scalar = mean_scalar.flatten()
-            if var_scalar.ndim > 1:
-                var_scalar = var_scalar.flatten()
-
-            # Ensure correct size
-            if len(mean_scalar) != len(running_mean):
-                raise ValueError(
-                    f"Shape mismatch: mean_scalar has {len(mean_scalar)} elements, "
-                    f"but running_mean has {len(running_mean)} elements"
-                )
-
-            # Update running statistics
-            running_mean[:] = (1 - momentum) * running_mean + momentum * mean_scalar
-            running_var[:] = (1 - momentum) * running_var + momentum * var_scalar
-    else:
-        # Use running statistics
-        if running_mean is not None and running_var is not None:
-            # Convert numpy arrays to proper shape for broadcasting
-            mean = np.array(running_mean)
-            var = np.array(running_var)
-
-            # Add dimensions for broadcasting
-            if x.ndim == 2:
-                mean = mean.reshape(1, -1)
-                var = var.reshape(1, -1)
-            elif x.ndim == 3:
-                mean = mean.reshape(1, -1, 1)
-                var = var.reshape(1, -1, 1)
-        else:
-            # Fallback to batch statistics
-            mean = xp.mean(x._data, axis=axes, keepdims=True)
-            var = xp.var(x._data, axis=axes, keepdims=True)
-
-    # Normalize
-    x_normalized_data = (x._data - mean) / xp.sqrt(var + eps)
-
-    # Apply affine transformation if gamma/beta provided
-    if gamma is not None and beta is not None:
-        # Reshape gamma and beta for broadcasting
-        if x.ndim == 2:
-            gamma_data = gamma._data.reshape(1, -1)
-            beta_data = beta._data.reshape(1, -1)
-        elif x.ndim == 3:
-            gamma_data = gamma._data.reshape(1, -1, 1)
-            beta_data = beta._data.reshape(1, -1, 1)
-
-        output_data = x_normalized_data * gamma_data + beta_data
-    else:
-        output_data = x_normalized_data
-
-    result = nm._create_result(output_data)
-
-    # Setup autograd
-    requires_grad_list = [x.requires_grad]
-    if gamma is not None:
-        requires_grad_list.append(gamma.requires_grad)
-    if beta is not None:
-        requires_grad_list.append(beta.requires_grad)
-
-    if not nm.autograd.is_enabled() or not any(requires_grad_list):
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-
-    prev_list = [x]
-    if gamma is not None:
-        prev_list.append(gamma)
-    if beta is not None:
-        prev_list.append(beta)
-    result._prev = tuple(prev_list)
-
-    # Save for backward
-    saved_x_normalized = x_normalized_data
-    saved_mean = mean
-    saved_var = var
-    saved_x_shape = x.shape
-    saved_axes = axes
-    saved_has_gamma = gamma is not None
-    saved_has_beta = beta is not None
-    saved_eps = eps
-
-    def _backward():
-        if result.grad is None:
-            return
-
-        grad_output = result.grad._data
-
-        # Gradient w.r.t. gamma
-        if saved_has_gamma and gamma.requires_grad:
-            grad_gamma = xp.sum(grad_output * saved_x_normalized, axis=saved_axes)
-            grad_gamma_result = nm._create_result(grad_gamma)
-            if gamma.grad is None:
-                gamma.grad = grad_gamma_result
-            else:
-                gamma.grad._data += grad_gamma_result._data
-
-        # Gradient w.r.t. beta
-        if saved_has_beta and beta.requires_grad:
-            grad_beta = xp.sum(grad_output, axis=saved_axes)
-            grad_beta_result = nm._create_result(grad_beta)
-            if beta.grad is None:
-                beta.grad = grad_beta_result
-            else:
-                beta.grad._data += grad_beta_result._data
-
-        # Gradient w.r.t. input x
-        if x.requires_grad:
-            if saved_has_gamma:
-                if x.ndim == 2:
-                    gamma_data = gamma._data.reshape(1, -1)
-                elif x.ndim == 3:
-                    gamma_data = gamma._data.reshape(1, -1, 1)
-                grad_normalized = grad_output * gamma_data
-            else:
-                grad_normalized = grad_output
-
-            # Backprop through normalization
-            N = saved_x_shape[0]
-            if x.ndim == 3:
-                N = N * saved_x_shape[2]  # Total number of elements per feature
-
-            std_inv = 1.0 / xp.sqrt(saved_var + saved_eps)
-
-            # Gradients for variance and mean
-            grad_var = xp.sum(
-                grad_normalized * (x._data - saved_mean) * (-0.5) * (std_inv**3),
-                axis=saved_axes,
-                keepdims=True,
-            )
-
-            grad_mean = xp.sum(
-                grad_normalized * (-std_inv), axis=saved_axes, keepdims=True
-            ) + grad_var * xp.mean(
-                -2.0 * (x._data - saved_mean), axis=saved_axes, keepdims=True
-            )
-
-            # Gradient for x
-            grad_x_data = (
-                grad_normalized * std_inv
-                + grad_var * 2.0 * (x._data - saved_mean) / N
-                + grad_mean / N
-            )
-
-            grad_x = nm._create_result(grad_x_data)
-            if x.grad is None:
-                x.grad = grad_x
-            else:
-                x.grad._data += grad_x._data
-
-    result._backward = _backward
-    return result
+    return _batch_norm_1d(
+        x,
+        gamma,
+        beta,
+        running_mean=running_mean,
+        running_var=running_var,
+        training=training,
+        momentum=momentum,
+        eps=eps,
+    )
 
 
 class BatchNorm1d(Module):

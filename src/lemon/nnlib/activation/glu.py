@@ -2,6 +2,44 @@ import lemon.numlib as nm
 from lemon.nnlib.module import Module
 
 
+def _glu_forward(x, dim):
+    xp = nm.get_array_module(x)
+
+    ndim = x.ndim
+    if dim < 0:
+        dim = ndim + dim
+
+    size = x.shape[dim]
+    if size % 2 != 0:
+        raise ValueError(f"Size along dim={dim} must be even, got {size}")
+
+    half = size // 2
+
+    # Split along dim
+    idx_a = [slice(None)] * ndim
+    idx_b = [slice(None)] * ndim
+    idx_a[dim] = slice(0, half)
+    idx_b[dim] = slice(half, size)
+
+    a = x[tuple(idx_a)]
+    b = x[tuple(idx_b)]
+    sig_b = 1.0 / (1.0 + xp.exp(-b))
+    return a * sig_b, (a, sig_b, dim)
+
+
+def _glu_backward(ctx, grad, needs_grad):
+    a, sig_b, dim = ctx
+    xp = nm.get_array_module(grad)
+    # dL/da = grad * sigmoid(b)
+    grad_a = grad * sig_b
+    # dL/db = grad * a * sigmoid(b) * (1 - sigmoid(b))
+    grad_b = grad * a * sig_b * (1.0 - sig_b)
+    return (xp.concatenate([grad_a, grad_b], axis=dim),)
+
+
+_glu = nm.make_op(_glu_forward, _glu_backward)
+
+
 def glu(x, dim=-1):
     """
     GLU (Gated Linear Unit) activation function
@@ -30,56 +68,7 @@ def glu(x, dim=-1):
     -----
     Used in gated CNNs and as the basis for SwiGLU (SiLU + GLU).
     """
-    xp = nm.get_array_module(x._data)
-
-    ndim = x.ndim
-    if dim < 0:
-        dim = ndim + dim
-
-    size = x.shape[dim]
-    if size % 2 != 0:
-        raise ValueError(f"Size along dim={dim} must be even, got {size}")
-
-    half = size // 2
-
-    # Split along dim
-    idx_a = [slice(None)] * ndim
-    idx_b = [slice(None)] * ndim
-    idx_a[dim] = slice(0, half)
-    idx_b[dim] = slice(half, size)
-
-    a_data = x._data[tuple(idx_a)]
-    b_data = x._data[tuple(idx_b)]
-    sig_b = 1.0 / (1.0 + xp.exp(-b_data))
-    output_data = a_data * sig_b
-    result = nm._create_result(output_data)
-
-    if not nm.autograd.is_enabled() or not x.requires_grad:
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    result._prev = (x,)
-
-    def _backward():
-        if result.grad is None:
-            return
-        if x.requires_grad:
-            grad = result.grad._data
-            # dL/da = grad * sigmoid(b)
-            grad_a = grad * sig_b
-            # dL/db = grad * a * sigmoid(b) * (1 - sigmoid(b))
-            grad_b = grad * a_data * sig_b * (1.0 - sig_b)
-
-            grad_x = xp.concatenate([grad_a, grad_b], axis=dim)
-            g = nm._create_result(grad_x)
-            if x.grad is None:
-                x.grad = g
-            else:
-                x.grad._data += g._data
-
-    result._backward = _backward
-    return result
+    return _glu(x, dim=dim)
 
 
 class Glu(Module):

@@ -2,6 +2,24 @@ import lemon.numlib as nm
 from lemon.nnlib.module import Module
 
 
+def _sign_forward(x):
+    xp = nm.get_array_module(x)
+    output = xp.sign(x)
+    # sign(0) = 0 in numpy; BNN convention uses +1
+    output = xp.where(output == 0, xp.ones_like(output), output)
+    return output, x
+
+
+def _sign_backward(x, grad, needs_grad):
+    # STE: pass gradient through, zeroed where |x| > 1
+    xp = nm.get_array_module(x)
+    mask = (xp.abs(x) <= 1.0).astype(x.dtype)
+    return (grad * mask,)
+
+
+_sign = nm.make_op(_sign_forward, _sign_backward)
+
+
 def sign(x):
     """
     Sign activation with Straight-Through Estimator (STE)
@@ -26,34 +44,7 @@ def sign(x):
     through the non-differentiable sign operation.
     Used as the core building block of Binary Neural Networks (BNN).
     """
-    xp = nm.get_array_module(x._data)
-    output_data = xp.sign(x._data)
-    # sign(0) = 0 in numpy; BNN convention uses +1
-    output_data = xp.where(output_data == 0, xp.ones_like(output_data), output_data)
-    result = nm._create_result(output_data)
-
-    if not nm.autograd.is_enabled() or not x.requires_grad:
-        result.requires_grad = False
-        return result
-
-    result.requires_grad = True
-    result._prev = (x,)
-
-    def _backward():
-        if result.grad is None:
-            return
-        if x.requires_grad:
-            # STE: pass gradient through, zeroed where |x| > 1
-            mask = (xp.abs(x._data) <= 1.0).astype(x._data.dtype)
-            grad = result.grad._data * mask
-            g = nm._create_result(grad)
-            if x.grad is None:
-                x.grad = g
-            else:
-                x.grad._data += g._data
-
-    result._backward = _backward
-    return result
+    return _sign(x)
 
 
 class Sign(Module):

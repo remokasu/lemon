@@ -19,7 +19,8 @@ class Module:
     ...         self.bias = Parameter(nm.zeros(out_features))
     ...
     ...     def forward(self, x):
-    ...         return x @ self.weight.data + self.bias.data
+    ...         out = x @ self.weight.data
+    ...         return out + nm.broadcast_to(self.bias.data, out.shape)
     >>>
     >>> layer = Linear(10, 5)
     >>> x = nm.randn(3, 10)

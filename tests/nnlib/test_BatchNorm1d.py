@@ -62,7 +62,9 @@ def test_basic_forward_2d():
 
     # Check that variance is approximately 1
     # Calculate variance manually: Var[X] = E[(X - mean)^2]
-    output_var = nm.mean((output - nm.mean(output, axis=0)) ** 2, axis=0)
+    output_var = nm.mean(
+        (output - nm.broadcast_to(nm.mean(output, axis=0), output.shape)) ** 2, axis=0
+    )
     assert allclose(output_var, nm.ones(3), atol=1e-6), (
         f"Expected variance ~1, got {output_var}"
     )

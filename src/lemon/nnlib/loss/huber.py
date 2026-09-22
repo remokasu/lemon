@@ -31,7 +31,7 @@ def huber_loss(y_pred, y_true, delta=1.0, reduction="mean"):
     error = y_pred - y_true
     abs_error = nm.abs(error)
     quadratic = 0.5 * error**2
-    linear = delta * (abs_error - 0.5 * delta)
+    linear = delta * (abs_error - 0.5 * delta * nm.ones_like(abs_error))
     loss = nm.where(abs_error <= delta, quadratic, linear)
 
     if reduction == "mean":

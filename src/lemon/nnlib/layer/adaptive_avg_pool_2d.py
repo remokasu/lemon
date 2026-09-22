@@ -1,5 +1,6 @@
 from lemon.nnlib.module import Module
 import lemon.numlib as nm
+from lemon.nnlib.layer.avg_pool_2d import avg_pool_2d
 
 
 def adaptive_avg_pool_2d(x, output_size):
@@ -37,7 +38,6 @@ def adaptive_avg_pool_2d(x, output_size):
     This is commonly used before fully connected layers in classification networks
     to handle variable input sizes. Uses numlib's mean function which supports autograd.
     """
-    xp = nm.get_array_module(x._data)
     N, C, H, W = x.shape
 
     if isinstance(output_size, int):
@@ -50,16 +50,8 @@ def adaptive_avg_pool_2d(x, output_size):
     kernel_h = H - (H_out - 1) * stride_h
     kernel_w = W - (W_out - 1) * stride_w
 
-    # Use im2col for extraction
-    col_data = nm.im2col(x._data, kernel_h, kernel_w, stride=stride_h, padding=0)
-    col_data = col_data.reshape(N, C, kernel_h * kernel_w, H_out * W_out)
-
-    # Take mean using numlib (supports autograd)
-    col = nm.tensor(col_data)
-    out = nm.mean(col, axis=2)  # (N, C, H_out*W_out)
-    out = nm.reshape(out, (N, C, H_out, W_out))
-
-    return out
+    # 窓の大きさと stride を決めたら、平均プーリングと同じ計算（勾配も入力に戻る）
+    return avg_pool_2d(x, (kernel_h, kernel_w), stride=(stride_h, stride_w), padding=0)
 
 
 class AdaptiveAvgPool2d(Module):

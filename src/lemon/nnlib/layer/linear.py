@@ -36,7 +36,8 @@ def linear(x, weight, bias=None):
     output = x @ weight
 
     if bias is not None:
-        output = output + bias
+        # X W + 1 bᵀ: バイアスを各行に明示的に広げて足す
+        output = output + nm.broadcast_to(bias, output.shape)
 
     return output
 
