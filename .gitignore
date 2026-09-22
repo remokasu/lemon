@@ -92,6 +92,7 @@ htmlcov/
 jupyter_config/
 data/
 benchmark/
+!example/benchmark/
 .ruff_cache
 docker-compose.yml
 Dockerfile

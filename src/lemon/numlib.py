@@ -374,12 +374,238 @@ autograd = AutogradNamespace()
 
 
 # ==============================
+# Higher-Order Gradient Helpers
+# ==============================
+# 逆伝播の閉包 `_backward` は 2 つのモードを持つ:
+#
+#   _backward()                   1 階: 勾配の式を生の配列で計算する（速い経路）
+#   _backward(create_graph=True)  高階: 勾配の式を numlib の演算で計算し、
+#                                 勾配の計算そのものも計算グラフに残す
+#
+# 高階のモードに対応しているかは `_backward` のシグネチャ（引数を 1 つ取るか）で表す
+# （_supports_create_graph）。引数を取らない `_backward`（make_op の演算、まだ対応して
+# いない演算）は 1 階専用とみなし、create_graph=True の逆伝播の前にエラーにする。
+
+
+def _backward_built_under_off(create_graph=False):
+    """
+    番兵: 勾配を追跡する値から autograd.off の中で作ったので、グラフを持たない
+
+    off の中では、この番兵を持つ値から作った値にも引き継ぐ（off の中で合成した関数の
+    値も見分けられるように）。on に戻ってから使った値には引き継がない（off の中の値を
+    定数として使った、と読む。detach() と同じ意味）。
+    """
+
+
+def _backward_graph_freed(create_graph=False):
+    """番兵: backward(retain_graph=False) で計算グラフを解放した"""
+
+
+def _supports_create_graph(fn):
+    """
+    _backward が高階のモード（引数 create_graph）に対応していれば True
+
+    約束: 高階に対応した `_backward` は ``def _backward(create_graph=False)`` の形で、
+    create_graph=True のときは勾配を numlib の演算で計算して `_accumulate_graph` で
+    足し込む。引数を取らない `_backward` は 1 階専用。
+    """
+    code = getattr(fn, "__code__", None)
+    return code is not None and code.co_argcount >= 1
+
+
+def _as_constant(data, like):
+    """生の配列 data を、like と同じ種類（数学の型か Tensor か）・同じ dtype の定数にする"""
+    return _create_result(
+        data.astype(like.dtype, copy=False), requires_grad=False, math=_is_math(like)
+    )
+
+
+def _scalar_like(value, like):
+    """
+    数 value を、like と同じ dtype の 0 次元の定数にする
+
+    高階用の勾配の式に 2 や log(2) を直接書くと float64 の定数になり、float32 の勾配が
+    float64 に上がってしまう。それを避けるために使う。
+    """
+    xp = get_array_module(like._data)
+    data = xp.asarray(value, dtype=like.dtype)
+    if data.dtype.kind == "f":
+        return Real(data, kind=data.dtype.itemsize * 8, requires_grad=False)
+    return _create_result(data, requires_grad=False)
+
+
+def _spread(s, like):
+    """s がスカラーで like が配列なら、s を like と同じ空間の元（s * ones_like(like)）にする"""
+    if s.shape == like.shape:
+        return s
+    return s * ones_like(like)
+
+
+def _accumulate_graph(x, g):
+    """
+    高階のモードで、勾配 g（計算グラフ付き）を x.grad に足し込む
+
+    勾配は変数と同じ空間の元なので、g の型を x の型にそろえる（型の変換は恒等写像なので
+    グラフはつながったまま）。1 階と違って x.grad._data は書き換えず、新しいノードを作る。
+    """
+    tx = type(x)
+    tg = type(g)
+    if tg is not tx and tx in _ARRAY_KINDS and tg in _ARRAY_KINDS:
+        g = _construct_or_cast(tx, g)
+    x.grad = g if x.grad is None else x.grad + g
+
+
+def _no_graph_hint(y):
+    """requires_grad=False の y を微分しようとしたときの hint（off の中で作った y だけ）"""
+    if y._backward is _backward_built_under_off:
+        return (
+            "This value was computed inside nm.autograd.off, so it has no "
+            "computation graph. Compute it inside nm.autograd.on. To treat it "
+            "as a constant on purpose, use y.detach()"
+        )
+    return None
+
+
+def _check_autograd_for_create_graph():
+    if not autograd.is_enabled():
+        raise GradientError(
+            "create_graph=True is not available inside nm.autograd.off",
+            hint=(
+                "Higher-order gradients need a computation graph for the "
+                "gradient itself. Use create_graph=True inside nm.autograd.on"
+            ),
+        )
+
+
+def _topological_order(root):
+    """root から _prev をたどったノードを、葉が先になる順に並べる（深いグラフでも反復で行う）"""
+    topo = []
+    visited = {id(root)}
+    stack = [(root, iter(getattr(root, "_prev", ())))]
+    while stack:
+        v, children = stack[-1]
+        for child in children:
+            if id(child) not in visited:
+                visited.add(id(child))
+                stack.append((child, iter(getattr(child, "_prev", ()))))
+                break
+        else:
+            stack.pop()
+            topo.append(v)
+    return topo
+
+
+def _check_graph_not_freed(topo):
+    for node in topo:
+        if node._backward is _backward_graph_freed:
+            raise GradientError(
+                "The computation graph has already been freed",
+                hint=(
+                    "backward() frees the graph unless retain_graph=True. Pass "
+                    "retain_graph=True to the earlier backward(), or compute the "
+                    "value again"
+                ),
+            )
+
+
+def _check_create_graph(topo):
+    """
+    create_graph=True の逆伝播の前に、1 階専用のノードがないかをまとめて調べる
+
+    途中まで x.grad に足し込んでから失敗しないよう、逆伝播を始める前に調べる。
+    """
+    _check_graph_not_freed(topo)
+    for node in topo:
+        if node._data.dtype.kind == "c":
+            raise GradientError(
+                "Higher-order gradient is not supported for complex numbers",
+                hint=(
+                    "Higher-order gradients of complex numbers are not supported "
+                    "yet. Use create_graph=False (first-order gradients of complex "
+                    "numbers work as before)"
+                ),
+            )
+        if not node._prev or _supports_create_graph(node._backward):
+            continue
+        qualname = getattr(node._backward, "__qualname__", "")
+        if qualname.startswith("make_op."):
+            raise GradientError(
+                "Higher-order gradient is not supported for `make_op` operations",
+                hint=(
+                    "Operations created with nm.make_op only support first-order "
+                    "gradients. Use create_graph=False, or express the operation "
+                    "with numlib functions"
+                ),
+            )
+        name = qualname.split(".<locals>")[0] or "unknown"
+        raise GradientError(
+            f"Higher-order gradient is not supported yet for `{name}`",
+            hint=(
+                "Supported so far: element-wise operations (+, -, *, /, exp, log, "
+                "sin, tanh, maximum, ...), pow, sum, mean, reshape, transpose, "
+                "broadcast_to, sum_to and type conversions (nm.vector, nm.tensor, "
+                "...). Other operations (matmul, dot, indexing, ...) will be "
+                "supported later. Use create_graph=False for first-order gradients"
+            ),
+        )
+
+
+def _backprop(root, seed, topo, create_graph):
+    """
+    topo（_topological_order の結果）を逆順にたどって勾配を流す
+
+    create_graph=False は 1 階の速い経路（生の配列）、True は勾配を numlib の演算で
+    計算して計算グラフに残す（呼ぶ前に _check_create_graph で調べておくこと）。
+    """
+    # 中間ノードの勾配は今回の逆伝播のぶんだけにする（retain_graph で
+    # 繰り返したとき、前回の値に足し込まれないように）。葉の勾配は累積する
+    for node in topo:
+        if node._prev:
+            node.grad = None
+
+    if create_graph:
+        # 勾配の型は _accumulate_graph が足し込むたびに変数の型にそろえる。種もそろえる
+        tr, ts = type(root), type(seed)
+        if ts is not tr and tr in _ARRAY_KINDS and ts in _ARRAY_KINDS:
+            seed = _construct_or_cast(tr, seed)
+        root.grad = seed
+        for node in reversed(topo):
+            # 葉の _backward は何もしないので呼ばない（引数を取らないものもある）
+            if node._prev:
+                node._backward(True)
+        return
+
+    root.grad = seed
+    for node in reversed(topo):
+        node._backward()
+
+    # 勾配は変数と同じ空間の元なので、数学の型の変数には同じ型の勾配を持たせる
+    for node in topo:
+        g = node.grad
+        if (
+            g is not None
+            and isinstance(node, _MATRIX_TYPES)
+            and type(g) is not type(node)
+            and g.shape == node.shape
+        ):
+            node.grad = _create_result(g._data, requires_grad=g.requires_grad, math=True)
+
+
+# ==============================
 # Operation Factory Functions
 # ==============================
 
 
 def _make_binary_op(
-    forward_fn, grad_x_fn, grad_y_fn, save_data=True, kind="map", name="operation"
+    forward_fn,
+    grad_x_fn,
+    grad_y_fn,
+    save_data=True,
+    kind="map",
+    name="operation",
+    *,
+    grad_x_graph,
+    grad_y_graph,
 ):
     """
     二項演算のファクトリ関数
@@ -391,15 +617,20 @@ def _make_binary_op(
     forward_fn : callable(x_data, y_data) -> ndarray
         順伝播: result = forward_fn(x._data, y._data)
     grad_x_fn : callable(grad, x_data, y_data, result_data) -> ndarray
-        x の勾配計算
+        x の勾配計算（1 階用。生の配列）
     grad_y_fn : callable(grad, x_data, y_data, result_data) -> ndarray
-        y の勾配計算
+        y の勾配計算（1 階用。生の配列）
     save_data : bool, optional
         x._data, y._data を保存するか (デフォルト: True)
     kind : {"add", "mul", "div", "map"}, optional
         数学的に定義される組み合わせの種類（_check_elementwise を参照）
     name : str, optional
         エラーメッセージに出す演算の名前
+    grad_x_graph : callable(grad, x, y, result) -> NumType
+        x の勾配計算（高階用。引数はすべて NumType のノードで、numlib の演算で書く）。
+        create_graph=True の逆伝播で使い、勾配の計算も計算グラフに残る
+    grad_y_graph : callable(grad, x, y, result) -> NumType
+        y の勾配計算（高階用）
 
     Returns
     -------
@@ -411,7 +642,9 @@ def _make_binary_op(
     >>> add = _make_binary_op(
     ...     forward_fn=lambda x, y: x + y,
     ...     grad_x_fn=lambda g, x, y, r: g,
-    ...     grad_y_fn=lambda g, x, y, r: g
+    ...     grad_y_fn=lambda g, x, y, r: g,
+    ...     grad_x_graph=lambda g, x, y, r: g,
+    ...     grad_y_graph=lambda g, x, y, r: g,
     ... )
     """
 
@@ -433,6 +666,14 @@ def _make_binary_op(
         if not (autograd.is_enabled() and (x_req or y_req)):
             result = _create_result(result_data, math=math)
             result.requires_grad = False
+            if x_req or y_req or (
+                (
+                    x._backward is _backward_built_under_off
+                    or y._backward is _backward_built_under_off
+                )
+                and not autograd.is_enabled()
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         # 勾配が必要な場合
@@ -455,8 +696,20 @@ def _make_binary_op(
         y_shape = y.shape
         result_data_saved = result_data if not save_data else None
 
-        def _backward():
+        def _backward(create_graph=False):
             if result.grad is None:
+                return
+
+            if create_graph:
+                g = result.grad
+                if x_req:
+                    _accumulate_graph(
+                        x, sum_to(grad_x_graph(g, x, y, result), x_shape)
+                    )
+                if y_req:
+                    _accumulate_graph(
+                        y, sum_to(grad_y_graph(g, x, y, result), y_shape)
+                    )
                 return
 
             grad_data = result.grad._data
@@ -497,7 +750,7 @@ def _make_binary_op(
     return binary_op
 
 
-def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
+def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True, *, grad_graph):
     """
     単項演算のファクトリ関数
 
@@ -508,11 +761,14 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
     forward_fn : callable(xp, x_data) -> ndarray
         順伝播: result = forward_fn(xp, x._data)
     grad_fn : callable(grad, x_data, result_data, xp) -> ndarray
-        勾配計算: grad_x = grad_fn(grad, x._data, result._data, xp)
+        勾配計算（1 階用。生の配列）: grad_x = grad_fn(grad, x._data, result._data, xp)
     save_input : bool, optional
         x._data を保存するか (デフォルト: False)
     save_output : bool, optional
         result._data を保存するか (デフォルト: True)
+    grad_graph : callable(grad, x, result) -> NumType
+        勾配計算（高階用。引数はすべて NumType のノードで、numlib の演算で書く）。
+        create_graph=True の逆伝播で使い、勾配の計算も計算グラフに残る
 
     Returns
     -------
@@ -524,6 +780,7 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
     >>> exp = _make_unary_op(
     ...     forward_fn=lambda xp, x: xp.exp(x),
     ...     grad_fn=lambda g, x, r, xp: g * r,  # d exp(x)/dx = exp(x) = r
+    ...     grad_graph=lambda g, x, r: g * r,
     ...     save_input=False,
     ...     save_output=True
     ... )
@@ -540,6 +797,10 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
         # 早期リターン
         if not (autograd.is_enabled() and x.requires_grad):
             result.requires_grad = False
+            if x.requires_grad or (
+                x._backward is _backward_built_under_off and not autograd.is_enabled()
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         result.requires_grad = True
@@ -549,8 +810,12 @@ def _make_unary_op(forward_fn, grad_fn, save_input=False, save_output=True):
         x_data = x._data if save_input else None
         result_data_saved = result._data if save_output else None
 
-        def _backward():
+        def _backward(create_graph=False):
             if result.grad is None:
+                return
+
+            if create_graph:
+                _accumulate_graph(x, grad_graph(result.grad, x, result))
                 return
 
             grad_data = result.grad._data
@@ -630,6 +895,11 @@ def make_op(forward, backward):
         needs_grad = tuple(a is not None and a.requires_grad for a in xs)
         if not (autograd.is_enabled() and builtins.any(needs_grad)):
             result.requires_grad = False
+            if builtins.any(needs_grad) or (
+                not autograd.is_enabled()
+                and builtins.any(a is not None and a._backward is _backward_built_under_off for a in xs)
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         result.requires_grad = True
@@ -677,6 +947,8 @@ add = _make_binary_op(
     forward_fn=lambda x, y: x + y,
     grad_x_fn=lambda g, x, y, r: g,
     grad_y_fn=lambda g, x, y, r: g,
+    grad_x_graph=lambda g, x, y, r: g,
+    grad_y_graph=lambda g, x, y, r: g,
     kind="add",
     name="addition",
 )
@@ -686,6 +958,8 @@ sub = _make_binary_op(
     forward_fn=lambda x, y: x - y,
     grad_x_fn=lambda g, x, y, r: g,
     grad_y_fn=lambda g, x, y, r: -g,
+    grad_x_graph=lambda g, x, y, r: g,
+    grad_y_graph=lambda g, x, y, r: -g,
     kind="add",
     name="subtraction",
 )
@@ -695,6 +969,8 @@ mul = _make_binary_op(
     forward_fn=lambda x, y: x * y,
     grad_x_fn=lambda g, x, y, r: g * y,
     grad_y_fn=lambda g, x, y, r: g * x,
+    grad_x_graph=lambda g, x, y, r: g * y,
+    grad_y_graph=lambda g, x, y, r: g * x,
     kind="mul",
     name="multiplication",
 )
@@ -704,6 +980,8 @@ div = _make_binary_op(
     forward_fn=lambda x, y: x / y,
     grad_x_fn=lambda g, x, y, r: g / y,
     grad_y_fn=lambda g, x, y, r: -g * x / (y * y),
+    grad_x_graph=lambda g, x, y, r: g / y,
+    grad_y_graph=lambda g, x, y, r: -(g * x) / (y * y),
     kind="div",
     name="division",
 )
@@ -716,13 +994,17 @@ div = _make_binary_op(
 neg = _make_unary_op(
     forward_fn=lambda xp, x: -x,
     grad_fn=lambda g, x, r, xp: -g,
+    grad_graph=lambda g, x, r: -g,
     save_input=False,
     save_output=False,
 )
 
+# |x| は x = 0 で微分できない。ほとんど至る所での微分 sign(x) を使い（x = 0 では 0）、
+# sign(x) の微分は 0（定数）として扱う
 absolute = _make_unary_op(
     forward_fn=lambda xp, x: xp.absolute(x),
     grad_fn=lambda g, x, r, xp: g * xp.sign(x),
+    grad_graph=lambda g, x, r: g * _as_constant(get_array_module(x._data).sign(x._data), x),
     save_input=True,
     save_output=False,
 )
@@ -733,6 +1015,7 @@ abs = absolute
 sqrt = _make_unary_op(
     forward_fn=lambda xp, x: xp.sqrt(x),
     grad_fn=lambda g, x, r, xp: g / (2 * r),  # d sqrt(x)/dx = 1/(2*sqrt(x))
+    grad_graph=lambda g, x, r: g / (_scalar_like(2, r) * r),
     save_input=False,
     save_output=True,
 )
@@ -745,6 +1028,7 @@ sqrt = _make_unary_op(
 exp = _make_unary_op(
     forward_fn=lambda xp, x: xp.exp(x),
     grad_fn=lambda g, x, r, xp: g * r,  # d exp(x)/dx = exp(x) = r
+    grad_graph=lambda g, x, r: g * r,
     save_input=False,
     save_output=True,
 )
@@ -752,6 +1036,7 @@ exp = _make_unary_op(
 log = _make_unary_op(
     forward_fn=lambda xp, x: xp.log(x),
     grad_fn=lambda g, x, r, xp: g / x,  # d log(x)/dx = 1/x
+    grad_graph=lambda g, x, r: g / x,
     save_input=True,
     save_output=False,
 )
@@ -759,6 +1044,7 @@ log = _make_unary_op(
 expm1 = _make_unary_op(
     forward_fn=lambda xp, x: xp.expm1(x),
     grad_fn=lambda g, x, r, xp: g * xp.exp(x),  # d (exp(x)-1)/dx = exp(x)
+    grad_graph=lambda g, x, r: g * exp(x),
     save_input=True,
     save_output=False,
 )
@@ -766,6 +1052,7 @@ expm1 = _make_unary_op(
 log1p = _make_unary_op(
     forward_fn=lambda xp, x: xp.log1p(x),
     grad_fn=lambda g, x, r, xp: g / (1 + x),  # d log(1+x)/dx = 1/(1+x)
+    grad_graph=lambda g, x, r: g / (ones_like(x) + x),
     save_input=True,
     save_output=False,
 )
@@ -773,6 +1060,7 @@ log1p = _make_unary_op(
 log2 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log2(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(2)),  # d log2(x)/dx = 1/(x*ln(2))
+    grad_graph=lambda g, x, r: g / (x * _scalar_like(np.log(2.0), x)),
     save_input=True,
     save_output=False,
 )
@@ -780,6 +1068,7 @@ log2 = _make_unary_op(
 log10 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log10(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(10)),  # d log10(x)/dx = 1/(x*ln(10))
+    grad_graph=lambda g, x, r: g / (x * _scalar_like(np.log(10.0), x)),
     save_input=True,
     save_output=False,
 )
@@ -792,6 +1081,7 @@ log10 = _make_unary_op(
 sin = _make_unary_op(
     forward_fn=lambda xp, x: xp.sin(x),
     grad_fn=lambda g, x, r, xp: g * xp.cos(x),  # d sin(x)/dx = cos(x)
+    grad_graph=lambda g, x, r: g * cos(x),
     save_input=True,
     save_output=False,
 )
@@ -799,6 +1089,7 @@ sin = _make_unary_op(
 cos = _make_unary_op(
     forward_fn=lambda xp, x: xp.cos(x),
     grad_fn=lambda g, x, r, xp: -g * xp.sin(x),  # d cos(x)/dx = -sin(x)
+    grad_graph=lambda g, x, r: -(g * sin(x)),
     save_input=True,
     save_output=False,
 )
@@ -806,6 +1097,7 @@ cos = _make_unary_op(
 tan = _make_unary_op(
     forward_fn=lambda xp, x: xp.tan(x),
     grad_fn=lambda g, x, r, xp: g / (xp.cos(x) ** 2),  # d tan(x)/dx = 1/cos²(x)
+    grad_graph=lambda g, x, r: g / cos(x) ** 2,
     save_input=True,
     save_output=False,
 )
@@ -813,6 +1105,7 @@ tan = _make_unary_op(
 arcsin = _make_unary_op(
     forward_fn=lambda xp, x: xp.arcsin(x),
     grad_fn=lambda g, x, r, xp: g / xp.sqrt(1 - x**2),  # d arcsin(x)/dx = 1/sqrt(1-x²)
+    grad_graph=lambda g, x, r: g / sqrt(ones_like(x) - x**2),
     save_input=True,
     save_output=False,
 )
@@ -822,6 +1115,7 @@ arccos = _make_unary_op(
     grad_fn=lambda g, x, r, xp: (
         -g / xp.sqrt(1 - x**2)
     ),  # d arccos(x)/dx = -1/sqrt(1-x²)
+    grad_graph=lambda g, x, r: -g / sqrt(ones_like(x) - x**2),
     save_input=True,
     save_output=False,
 )
@@ -829,6 +1123,7 @@ arccos = _make_unary_op(
 arctan = _make_unary_op(
     forward_fn=lambda xp, x: xp.arctan(x),
     grad_fn=lambda g, x, r, xp: g / (1 + x**2),  # d arctan(x)/dx = 1/(1+x²)
+    grad_graph=lambda g, x, r: g / (ones_like(x) + x**2),
     save_input=True,
     save_output=False,
 )
@@ -841,6 +1136,7 @@ arctan = _make_unary_op(
 sinh = _make_unary_op(
     forward_fn=lambda xp, x: xp.sinh(x),
     grad_fn=lambda g, x, r, xp: g * xp.cosh(x),  # d sinh(x)/dx = cosh(x)
+    grad_graph=lambda g, x, r: g * cosh(x),
     save_input=True,
     save_output=False,
 )
@@ -848,6 +1144,7 @@ sinh = _make_unary_op(
 cosh = _make_unary_op(
     forward_fn=lambda xp, x: xp.cosh(x),
     grad_fn=lambda g, x, r, xp: g * xp.sinh(x),  # d cosh(x)/dx = sinh(x)
+    grad_graph=lambda g, x, r: g * sinh(x),
     save_input=True,
     save_output=False,
 )
@@ -855,6 +1152,7 @@ cosh = _make_unary_op(
 tanh = _make_unary_op(
     forward_fn=lambda xp, x: xp.tanh(x),
     grad_fn=lambda g, x, r, xp: g * (1 - r * r),  # d tanh(x)/dx = 1 - tanh²(x)
+    grad_graph=lambda g, x, r: g * (ones_like(r) - r * r),
     save_input=False,
     save_output=True,
 )
@@ -862,6 +1160,7 @@ tanh = _make_unary_op(
 arcsinh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arcsinh(x),
     grad_fn=lambda g, x, r, xp: g / xp.sqrt(x**2 + 1),  # d arcsinh(x)/dx = 1/sqrt(x²+1)
+    grad_graph=lambda g, x, r: g / sqrt(x**2 + ones_like(x)),
     save_input=True,
     save_output=False,
 )
@@ -869,6 +1168,7 @@ arcsinh = _make_unary_op(
 arccosh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arccosh(x),
     grad_fn=lambda g, x, r, xp: g / xp.sqrt(x**2 - 1),  # d arccosh(x)/dx = 1/sqrt(x²-1)
+    grad_graph=lambda g, x, r: g / sqrt(x**2 - ones_like(x)),
     save_input=True,
     save_output=False,
 )
@@ -876,6 +1176,7 @@ arccosh = _make_unary_op(
 arctanh = _make_unary_op(
     forward_fn=lambda xp, x: xp.arctanh(x),
     grad_fn=lambda g, x, r, xp: g / (1 - x**2),  # d arctanh(x)/dx = 1/(1-x²)
+    grad_graph=lambda g, x, r: g / (ones_like(x) - x**2),
     save_input=True,
     save_output=False,
 )
@@ -885,59 +1186,48 @@ arctanh = _make_unary_op(
 # 6. Comparison and Special Functions
 # ------------------------------
 
-
-# Helper functions for maximum
-def _maximum_grad_x(g, x, y, r):
-    """Gradient for maximum w.r.t. x: x > y: 1.0, x == y: 0.5, x < y: 0.0"""
-    xp = get_array_module(x)
-    mask = xp.zeros_like(x)
-    mask[x > y] = 1.0
-    mask[x == y] = 0.5
-    return g * mask
+# maximum / minimum は a = b で微分できない。ほとんど至る所での微分を使い、a = b では
+# 両方に半分ずつ（0.5）流す。マスクの微分は 0（定数）として扱う（1 階も高階も同じ決まり）
 
 
-def _maximum_grad_y(g, x, y, r):
-    """Gradient for maximum w.r.t. y: y > x: 1.0, y == x: 0.5, y < x: 0.0"""
-    xp = get_array_module(y)
-    mask = xp.zeros_like(y)
-    mask[y > x] = 1.0
-    mask[y == x] = 0.5
-    return g * mask
+def _maximum_mask(a, b, r):
+    """max(a, b) の a についての微分: a > b で 1、a == b で 0.5、a < b で 0（形は r と同じ）"""
+    mask = get_array_module(r).zeros_like(r)
+    mask[a > b] = 1.0
+    mask[a == b] = 0.5
+    return mask
+
+
+def _minimum_mask(a, b, r):
+    """min(a, b) の a についての微分: a < b で 1、a == b で 0.5、a > b で 0（形は r と同じ）"""
+    mask = get_array_module(r).zeros_like(r)
+    mask[a < b] = 1.0
+    mask[a == b] = 0.5
+    return mask
 
 
 maximum = _make_binary_op(
     forward_fn=lambda x, y: get_array_module(x).maximum(x, y),
-    grad_x_fn=_maximum_grad_x,
-    grad_y_fn=_maximum_grad_y,
+    grad_x_fn=lambda g, x, y, r: g * _maximum_mask(x, y, r),
+    grad_y_fn=lambda g, x, y, r: g * _maximum_mask(y, x, r),
+    grad_x_graph=lambda g, x, y, r: g
+    * _as_constant(_maximum_mask(x._data, y._data, r._data), g),
+    grad_y_graph=lambda g, x, y, r: g
+    * _as_constant(_maximum_mask(y._data, x._data, r._data), g),
     save_data=True,
     kind="map",
     name="maximum",
 )
 
 
-# Helper functions for minimum
-def _minimum_grad_x(g, x, y, r):
-    """Gradient for minimum w.r.t. x: x < y: 1.0, x == y: 0.5, x > y: 0.0"""
-    xp = get_array_module(x)
-    mask = xp.zeros_like(x)
-    mask[x < y] = 1.0
-    mask[x == y] = 0.5
-    return g * mask
-
-
-def _minimum_grad_y(g, x, y, r):
-    """Gradient for minimum w.r.t. y: y < x: 1.0, y == x: 0.5, y > x: 0.0"""
-    xp = get_array_module(y)
-    mask = xp.zeros_like(y)
-    mask[y < x] = 1.0
-    mask[y == x] = 0.5
-    return g * mask
-
-
 minimum = _make_binary_op(
     forward_fn=lambda x, y: get_array_module(x).minimum(x, y),
-    grad_x_fn=_minimum_grad_x,
-    grad_y_fn=_minimum_grad_y,
+    grad_x_fn=lambda g, x, y, r: g * _minimum_mask(x, y, r),
+    grad_y_fn=lambda g, x, y, r: g * _minimum_mask(y, x, r),
+    grad_x_graph=lambda g, x, y, r: g
+    * _as_constant(_minimum_mask(x._data, y._data, r._data), g),
+    grad_y_graph=lambda g, x, y, r: g
+    * _as_constant(_minimum_mask(y._data, x._data, r._data), g),
     save_data=True,
     kind="map",
     name="minimum",
@@ -948,6 +1238,7 @@ minimum = _make_binary_op(
 square = _make_unary_op(
     forward_fn=lambda xp, x: x**2,
     grad_fn=lambda g, x, r, xp: g * 2 * x,  # d x²/dx = 2x
+    grad_graph=lambda g, x, r: g * (_scalar_like(2, x) * x),
     save_input=True,
     save_output=False,
 )
@@ -955,6 +1246,7 @@ square = _make_unary_op(
 reciprocal = _make_unary_op(
     forward_fn=lambda xp, x: 1.0 / x,
     grad_fn=lambda g, x, r, xp: -g / (x**2),  # d (1/x)/dx = -1/x²
+    grad_graph=lambda g, x, r: -g / x**2,
     save_input=True,
     save_output=False,
 )
@@ -971,10 +1263,17 @@ def _atan2_grad_x(g, y, x, r):
     return g * (-y) / (x**2 + y**2)
 
 
+def _atan2_denominator(y, x, r):
+    """高階用: x² + y²。片方がスカラーなら ones_like で相手の空間の元にしてから足す"""
+    return _spread(x**2, r) + _spread(y**2, r)
+
+
 atan2 = _make_binary_op(
     forward_fn=lambda y, x: get_array_module(y).arctan2(y, x),
     grad_x_fn=_atan2_grad_y,  # Note: x in _make_binary_op corresponds to first arg (y)
     grad_y_fn=_atan2_grad_x,  # Note: y in _make_binary_op corresponds to second arg (x)
+    grad_x_graph=lambda g, y, x, r: g * x / _atan2_denominator(y, x, r),
+    grad_y_graph=lambda g, y, x, r: -(g * y) / _atan2_denominator(y, x, r),
     save_data=True,
     kind="map",
     name="atan2",
@@ -1186,7 +1485,7 @@ class DimensionError(NumlibError, ValueError):
 class GradientError(NumlibError, RuntimeError):
     """Gradient computation error (also a RuntimeError for backward compatibility)"""
 
-    def __init__(self, message, shape=None, suggestions=None):
+    def __init__(self, message, shape=None, suggestions=None, hint=None):
         msg = f"\n{message}\n"
 
         if shape is not None:
@@ -1196,6 +1495,9 @@ class GradientError(NumlibError, RuntimeError):
             msg += "\n  Possible solutions:\n"
             for i, suggestion in enumerate(suggestions, 1):
                 msg += f"    {i}. {suggestion}\n"
+
+        if hint:
+            msg += f"\n  Hint: {hint}\n"
 
         super().__init__(msg)
 
@@ -1273,7 +1575,7 @@ class NumType:
         self._prev = set()
         self._backward = lambda: None
 
-    def backward(self, gradient=None, retain_graph=False):
+    def backward(self, gradient=None, retain_graph=False, create_graph=False):
         """
         Compute gradients via backpropagation.
 
@@ -1284,30 +1586,42 @@ class NumType:
         retain_graph : bool, optional
             If False (default), the computation graph is freed after backward.
             If True, the graph is retained for multiple backward calls.
+        create_graph : bool, optional
+            If True, the gradients are computed with numlib operations and
+            ``x.grad`` carries a computation graph, so it can be
+            differentiated again (higher-order derivatives). Implies
+            ``retain_graph=True``. If False (default), the fast first-order
+            path (raw arrays) is used.
+
+        Raises
+        ------
+        GradientError
+            If ``self`` does not require gradients, if ``create_graph=True``
+            is used inside ``nm.autograd.off``, or if the graph contains an
+            operation that supports only first-order gradients (``make_op``
+            operations, complex numbers, operations not yet supported).
+
+        Examples
+        --------
+        >>> x = nm.real(2.0, requires_grad=True)
+        >>> y = x ** 3
+        >>> y.backward(create_graph=True)   # x.grad = 3x² = 12 (with a graph)
+        >>> x.grad.backward()               # x.grad += d(3x²)/dx = 6x = 12
         """
         if not self.requires_grad:
-            raise RuntimeError(f"{type(self).__name__} does not require gradients")
+            raise GradientError(
+                f"{type(self).__name__} does not require gradients",
+                hint=_no_graph_hint(self),
+            )
 
-        # トポロジカルソート（深いグラフで RecursionError にならないよう反復で行う）
-        topo = []
-        visited = {id(self)}
-        stack = [(self, iter(getattr(self, "_prev", ())))]
-        while stack:
-            v, children = stack[-1]
-            for child in children:
-                if id(child) not in visited:
-                    visited.add(id(child))
-                    stack.append((child, iter(getattr(child, "_prev", ()))))
-                    break
-            else:
-                stack.pop()
-                topo.append(v)
+        if create_graph:
+            _check_autograd_for_create_graph()
+            # 高階微分では勾配の計算が元のグラフを参照するので、グラフは解放しない
+            retain_graph = True
 
-        # 中間ノードの勾配は今回の逆伝播のぶんだけにする（retain_graph で
-        # 繰り返したとき、前回の値に足し込まれないように）。葉の勾配は累積する
-        for node in topo:
-            if node._prev:
-                node.grad = None
+        topo = _topological_order(self)
+        if create_graph:
+            _check_create_graph(topo)
 
         # 勾配の初期化
         if gradient is None:
@@ -1321,32 +1635,17 @@ class NumType:
                         f"Provide gradient explicitly: output.backward(gradient=ones({self.shape}))",
                     ],
                 )
-            self.grad = ones_like(self)
-        else:
-            self.grad = gradient
+            gradient = ones_like(self)
 
-        # 逆順に逆伝播
-        for node in reversed(topo):
-            node._backward()
+        _backprop(self, gradient, topo, create_graph)
 
-        # 勾配は変数と同じ空間の元なので、数学の型の変数には同じ型の勾配を持たせる
-        for node in topo:
-            g = node.grad
-            if (
-                g is not None
-                and isinstance(node, _MATRIX_TYPES)
-                and type(g) is not type(node)
-                and g.shape == node.shape
-            ):
-                node.grad = _create_result(
-                    g._data, requires_grad=g.requires_grad, math=True
-                )
-
-        # retain_graph=Falseの場合、計算グラフを解放
+        # retain_graph=Falseの場合、計算グラフを解放する。解放したノードには番兵を
+        # 置き、あとで nm.grad などが黙って 0 を返さないようにする（葉には置かない）
         if not retain_graph:
             for node in topo:
-                node._prev = set()
-                node._backward = lambda: None
+                if node._prev:
+                    node._prev = set()
+                    node._backward = _backward_graph_freed
 
     @property
     def g(self):
@@ -3268,6 +3567,8 @@ def _create_result(
 
 # 数学の型（明示したときだけ使う型）
 _MATRIX_TYPES = (Vector, RowVector, Matrix)
+# 配列の型（勾配の型をそろえるときに使う。スカラーの型は含めない）
+_ARRAY_KINDS = (Tensor, Vector, RowVector, Matrix)
 _MATH_TYPES = (Vector, RowVector, Matrix, Scalar)
 _PY_SCALAR_TYPES = (bool, int, float, complex, np.number)
 
@@ -3443,7 +3744,31 @@ def _math_key(x, key):
 
 
 def pow(x, y):
-    """べき乗（超最適化版・修正版）"""
+    """
+    べき乗 xʸ（自動微分対応。高階微分にも対応）
+
+    Parameters
+    ----------
+    x : NumType or array_like
+        底
+    y : NumType, int, float or array_like
+        指数。Python の数（リテラル）なら定数として扱う
+
+    Returns
+    -------
+    NumType
+        xʸ
+
+    Notes
+    -----
+    微分は数学の定義に従う（1 階も高階も同じ決まり）。
+
+    - x についての微分 y·x^(y-1): y = 0 のとき、0⁰ = 1 の決まりで xʸ は x について定数
+      関数 1 なので、微分は x = 0 を含めてどこでも 0
+    - y についての微分 xʸ·ln x: x > 0 では定義どおり。x = 0 かつ y > 0 では極限の 0。
+      x < 0（ln x が定義されない）と、x = 0 かつ y ≤ 0（xʸ が y について微分できない）
+      では nan
+    """
     # ───────────────────────────────────────────────────────────
     # yがPythonリテラル（int/float）の場合の特殊処理
     # ───────────────────────────────────────────────────────────
@@ -3475,6 +3800,10 @@ def pow(x, y):
         if not (autograd.is_enabled() and x.requires_grad):
             result = _create_result(result_data, math=_is_math(x, y))
             result.requires_grad = False
+            if x.requires_grad or (
+                x._backward is _backward_built_under_off and not autograd.is_enabled()
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         # 勾配必要
@@ -3485,13 +3814,29 @@ def pow(x, y):
         x_shape = x.shape
         x_data = x._data
 
-        def _backward():
+        def _backward(create_graph=False):
             if result.grad is None:
                 return
 
+            if create_graph:
+                g = result.grad
+                if y_value == 0.0:
+                    # x⁰ は定数関数 1 なので、微分はどこでも 0
+                    _accumulate_graph(x, zeros_like(x))
+                elif y_value == 1.0:
+                    _accumulate_graph(x, g)
+                else:
+                    _accumulate_graph(
+                        x, g * (_scalar_like(y_value, x) * x ** (y_value - 1))
+                    )
+                return
+
             grad_data = result.grad._data
-            # d(x^y)/dx = y * x^(y-1)
-            grad_x_raw = grad_data * y_value * xp.power(x_data, y_value - 1)
+            # d(x^y)/dx = y * x^(y-1)。y = 0 は定数関数なので 0（x = 0 で 0·∞ にしない）
+            if y_value == 0.0:
+                grad_x_raw = xp.zeros_like(grad_data)
+            else:
+                grad_x_raw = grad_data * y_value * xp.power(x_data, y_value - 1)
             grad_x = sum_to(_create_result(grad_x_raw), x_shape)
 
             if x.grad is None:
@@ -3552,6 +3897,14 @@ def pow(x, y):
     if not (autograd.is_enabled() and (x_req or y_req)):
         result = _create_result(result_data, math=_is_math(x, y))
         result.requires_grad = False
+        if x_req or y_req or (
+            (
+                x._backward is _backward_built_under_off
+                or y._backward is _backward_built_under_off
+            )
+            and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x, y))
@@ -3571,15 +3924,29 @@ def pow(x, y):
     y_shape = y.shape
     result_data_saved = result_data
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            g = result.grad
+            if x_req:
+                _accumulate_graph(x, sum_to(_pow_grad_x_graph(g, x, y), x_shape))
+            if y_req:
+                _accumulate_graph(
+                    y, sum_to(_pow_grad_y_graph(g, x, y, result), y_shape)
+                )
             return
 
         grad_data = result.grad._data
 
         # d(x^y)/dx = y * x^(y-1)
         if x_req:
-            grad_x_raw = grad_data * y_data * xp.power(x_data, y_data - 1)
+            # y = 0 では xʸ は x について定数（0⁰ = 1）なので、x = 0 でも微分は 0。
+            # その点だけ底を 1 にして 0·∞ を避ける（y = 0 なので値は 0 になる）
+            zero_base = (y_data == 0) & (x_data == 0)
+            base = xp.where(zero_base, 1, x_data) if zero_base.any() else x_data
+            grad_x_raw = grad_data * y_data * xp.power(base, y_data - 1)
             grad_x = sum_to(_create_result(grad_x_raw), x_shape)
             if x.grad is None:
                 x.grad = grad_x
@@ -3588,15 +3955,18 @@ def pow(x, y):
 
         # d(x^y)/dy = x^y * log(x)
         if y_req:
-            eps = 1e-10
-            has_negative = xp.any(x_data <= 0)
-
-            if has_negative:
-                safe_x = xp.maximum(x_data, eps)
-                grad_y_raw = grad_data * result_data_saved * xp.log(safe_x)
-                grad_y_raw = xp.where(x_data > 0, grad_y_raw, 0)
-            else:
+            positive = x_data > 0
+            if positive.all():
                 grad_y_raw = grad_data * result_data_saved * xp.log(x_data)
+            else:
+                # 正でない x では ln x を計算しない。その点は x = 0 かつ y > 0 なら
+                # 極限の 0、それ以外は定義されないので nan（途中の inf·0 は捨てる値）
+                safe_x = xp.where(positive, x_data, 1)
+                with np.errstate(invalid="ignore"):
+                    grad_y_raw = grad_data * result_data_saved * xp.log(safe_x)
+                grad_y_raw = xp.where(
+                    positive, grad_y_raw, _pow_grad_y_fill(xp, x_data, y_data)
+                )
             grad_y = sum_to(_create_result(grad_y_raw), y_shape)
 
             if y.grad is None:
@@ -3606,6 +3976,37 @@ def pow(x, y):
 
     result._backward = _backward
     return result
+
+
+def _pow_grad_y_fill(xp, x_data, y_data):
+    """xʸ の y についての微分の、x ≤ 0 での値: x = 0 かつ y > 0 なら 0、それ以外は nan"""
+    return xp.where((x_data == 0) & (y_data > 0), 0.0, xp.nan)
+
+
+def _pow_grad_x_graph(g, x, y):
+    """高階用: xʸ の x についての勾配 g·y·x^(y-1)（y = 0 かつ x = 0 の点は 0）"""
+    base = x
+    zero_base = (y._data == 0) & (x._data == 0)
+    if zero_base.any():
+        # その点だけ底を 1 にずらして 0·∞ を避ける（y = 0 なので値は 0 のまま）
+        base = _spread(x, g)
+        base = base + _as_constant(zero_base, base)
+    return g * y * base ** (y - ones_like(y))
+
+
+def _pow_grad_y_graph(g, x, y, r):
+    """高階用: xʸ の y についての勾配 g·xʸ·ln x（x ≤ 0 の点は _pow_grad_y_fill の値）"""
+    x_data = x._data
+    positive = x_data > 0
+    if positive.all():
+        return g * r * log(x)
+    xp = get_array_module(x_data)
+    # 正でない点は底を 1 にして ln を有限にし、定数のマスクで消してから決まりの値を足す
+    # （その点の xʸ が inf のときの inf·0 = nan は、決まりの値でも nan なので警告だけ止める）
+    base = x + _as_constant(xp.where(positive, 0, 1 - x_data), x)
+    fill = xp.where(positive, 0.0, _pow_grad_y_fill(xp, x_data, y._data))
+    with np.errstate(invalid="ignore"):
+        return g * r * log(base) * _as_constant(positive, x) + _as_constant(fill, g)
 
 
 # Note: neg, absolute (abs) are now in the "Factory-Created Operations" section
@@ -3992,6 +4393,16 @@ def dot(x, y):
 # ==============================
 
 
+def _unreduce_graph(g, original_shape, axis, keepdims):
+    """高階用: 縮約で消えた軸を大きさ 1 の軸として戻す（そのあと broadcast_to で広げる）"""
+    if axis is None or keepdims:
+        return g
+    ndim = len(original_shape)
+    axes = {a % ndim for a in (axis if isinstance(axis, tuple) else (axis,))}
+    kept = tuple(1 if i in axes else n for i, n in enumerate(original_shape))
+    return reshape(g, kept)
+
+
 def sum(x, axis=None, keepdims=False):
     """和（自動微分対応）"""
     if not isinstance(x, NumType):
@@ -4009,6 +4420,8 @@ def sum(x, axis=None, keepdims=False):
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
         result.requires_grad = False
+        if x.requires_grad or x._backward is _backward_built_under_off:
+            result._backward = _backward_built_under_off
         return result
 
     # AND条件: x.requires_grad=Falseなら終了
@@ -4020,7 +4433,13 @@ def sum(x, axis=None, keepdims=False):
     result._prev = (x,)
     original_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
+        if create_graph:
+            if result.grad is not None:
+                g = _unreduce_graph(result.grad, original_shape, axis, keepdims)
+                _accumulate_graph(x, broadcast_to(g, original_shape))
+            return
+
         grad = result.grad
         grad_data = grad._data
 
@@ -4062,6 +4481,8 @@ def mean(x, axis=None, keepdims=False):
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
         result.requires_grad = False
+        if x.requires_grad or x._backward is _backward_built_under_off:
+            result._backward = _backward_built_under_off
         return result
 
     # AND条件: x.requires_grad=Falseなら終了
@@ -4084,7 +4505,14 @@ def mean(x, axis=None, keepdims=False):
             for ax in axis:
                 n *= x._data.shape[ax]
 
-    def _backward():
+    def _backward(create_graph=False):
+        if create_graph:
+            if result.grad is not None:
+                g = result.grad / _scalar_like(n, result.grad)
+                g = _unreduce_graph(g, original_shape, axis, keepdims)
+                _accumulate_graph(x, broadcast_to(g, original_shape))
+            return
+
         grad = result.grad
         grad_data = grad._data / n
 
@@ -4165,6 +4593,8 @@ def reshape(x, *shape, order="C"):
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
         result.requires_grad = False
+        if x.requires_grad or x._backward is _backward_built_under_off:
+            result._backward = _backward_built_under_off
         return result
 
     # AND条件: x.requires_grad=Falseなら終了
@@ -4176,9 +4606,15 @@ def reshape(x, *shape, order="C"):
     result._prev = (x,)
     original_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
+        if create_graph:
+            if result.grad is not None:
+                _accumulate_graph(x, reshape(result.grad, original_shape, order=order))
+            return
+
         grad = result.grad
-        grad_x_data = grad._data.reshape(original_shape)
+        # 順伝播と同じ order で戻す（order="F" の並べ替えの逆写像）
+        grad_x_data = grad._data.reshape(original_shape, order=order)
         grad_x = _create_result(grad_x_data)
 
         if x.grad is None:
@@ -4244,18 +4680,24 @@ def transpose(x, axes=None):
 
         if not (autograd.is_enabled() and x.requires_grad):
             result.requires_grad = False
+            if x.requires_grad or (
+                x._backward is _backward_built_under_off and not autograd.is_enabled()
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         result.requires_grad = True
         result._prev = (x,)
 
-        def _backward():
-            if result.grad is not None:
-                x.grad = (
-                    Vector(result.grad._data.T)
-                    if x.grad is None
-                    else (x.grad._data.__iadd__(result.grad._data.T), x.grad)[1]
-                )
+        def _backward(create_graph=False):
+            if result.grad is None:
+                return
+            if create_graph:
+                _accumulate_graph(x, transpose(result.grad))
+            elif x.grad is None:
+                x.grad = Vector(result.grad._data.T)
+            else:
+                x.grad._data = x.grad._data + result.grad._data.T
 
         result._backward = _backward
         return result
@@ -4266,18 +4708,24 @@ def transpose(x, axes=None):
 
         if not (autograd.is_enabled() and x.requires_grad):
             result.requires_grad = False
+            if x.requires_grad or (
+                x._backward is _backward_built_under_off and not autograd.is_enabled()
+            ):
+                result._backward = _backward_built_under_off
             return result
 
         result.requires_grad = True
         result._prev = (x,)
 
-        def _backward():
-            if result.grad is not None:
-                x.grad = (
-                    RowVector(result.grad._data.T)
-                    if x.grad is None
-                    else (x.grad._data.__iadd__(result.grad._data.T), x.grad)[1]
-                )
+        def _backward(create_graph=False):
+            if result.grad is None:
+                return
+            if create_graph:
+                _accumulate_graph(x, transpose(result.grad))
+            elif x.grad is None:
+                x.grad = RowVector(result.grad._data.T)
+            else:
+                x.grad._data = x.grad._data + result.grad._data.T
 
         result._backward = _backward
         return result
@@ -4307,13 +4755,21 @@ def transpose(x, axes=None):
     # 勾配不要なら即座にリターン
     if not (autograd.is_enabled() and x.requires_grad):
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
     result._prev = (x,)
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            _accumulate_graph(x, transpose(result.grad, inv_axes))
             return
 
         # 逆転置
@@ -4483,6 +4939,8 @@ def random_mask(x, p=0.5, training=True):
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
         result.requires_grad = False
+        if x.requires_grad or x._backward is _backward_built_under_off:
+            result._backward = _backward_built_under_off
         return result
 
     # AND条件: x.requires_grad=Falseなら終了
@@ -4575,6 +5033,8 @@ def random_mask_channel(x, p=0.5, training=True):
     # AND条件: autograd.offなら即終了
     if not autograd.is_enabled():
         result.requires_grad = False
+        if x.requires_grad or x._backward is _backward_built_under_off:
+            result._backward = _backward_built_under_off
         return result
 
     # AND条件: x.requires_grad=Falseなら終了
@@ -4753,14 +5213,22 @@ def _construct_or_cast(cls, data, **kwargs):
     x = data
     result = cls(x._data, requires_grad=False, **kwargs)
     if not (autograd.is_enabled() and x.requires_grad):
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
     result._prev = (x,)
     x_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+        if create_graph:
+            # 勾配の型は _accumulate_graph が x の型に戻す
+            _accumulate_graph(x, reshape(result.grad, x_shape))
             return
         g = result.grad._data.reshape(x_shape)
         if x.grad is None:
@@ -5789,6 +6257,10 @@ def broadcast_to(x, shape):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     # 勾配が必要な場合
@@ -5798,8 +6270,12 @@ def broadcast_to(x, shape):
 
     x_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            _accumulate_graph(x, sum_to(result.grad, x_shape))
             return
 
         # broadcast_toの逆操作はsum_to相当
@@ -5861,6 +6337,10 @@ def sum_to(x, shape):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -5869,8 +6349,13 @@ def sum_to(x, shape):
 
     x_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            # 結果の形 shape は x_shape の後ろの軸にそろっているので、そのまま広げられる
+            _accumulate_graph(x, broadcast_to(result.grad, x_shape))
             return
 
         # sum_toの逆操作はbroadcast_to
@@ -6677,6 +7162,154 @@ def col2im(col, input_shape, kernel_h, kernel_w, stride=1, padding=0, dilation=1
 
 
 # ==============================
+# 高階微分（Higher-Order Derivatives）
+# ==============================
+
+
+def grad(y, x, create_graph=False):
+    """
+    スカラー y の、変数 x についての勾配 ∇ₓy を返す（x.grad には足し込まない）
+
+    Parameters
+    ----------
+    y : NumType
+        スカラー（形が ()）の値
+    x : NumType or list of NumType or tuple of NumType
+        変数（``requires_grad=True``）。リストかタプルなら、同じ順番のリストを返す
+    create_graph : bool, optional
+        True なら勾配の計算も計算グラフに残し、戻り値をさらに微分できる
+        （高階微分）。False（デフォルト）なら戻り値は定数（``requires_grad=False``）
+
+    Returns
+    -------
+    NumType or list of NumType
+        x と同じ型・同じ形の勾配（``Vector`` の変数には ``Vector`` の勾配）。
+        y が x に依存しないときは 0（数学的に微分は 0 で定義されている）
+
+    Raises
+    ------
+    GradientError
+        y がスカラーでない、x が ``requires_grad=True`` でない、x が ``Integer`` /
+        ``Boolean``（微分できない型）、y を ``nm.autograd.off`` の中で作った、
+        計算グラフが解放済み、``create_graph=True`` を ``nm.autograd.off`` の中で
+        使った、``create_graph=True`` で 1 階専用の演算（``make_op``、複素数、
+        まだ対応していない演算）が計算グラフに入っている、のどれか
+
+    Notes
+    -----
+    計算グラフは解放しない（同じ y について何度でも呼べる）。グラフは y への参照が
+    なくなったときに消える。
+
+    y を ``nm.autograd.off`` の中で作った場合はエラーになるが、off の中で作った値を
+    外で使った場合（``with off: c = f(x)`` のあとの ``2 * c``）は、その値を定数として
+    扱ったことになり 0 が返る（``detach()`` と同じ意味）。
+
+    微分できない点（``abs`` の 0、``maximum`` / ``minimum`` の等しい点）は、1 階の
+    逆伝播と同じく、ほとんど至る所での微分の決まりを高階でも使う。
+
+    Examples
+    --------
+    >>> x = nm.real(2.0, requires_grad=True)
+    >>> y = x ** 3
+    >>> dy = nm.grad(y, x, create_graph=True)    # 3x² = 12
+    >>> d2y = nm.grad(dy, x, create_graph=True)  # 6x = 12
+    >>> nm.grad(d2y, x)                          # 6
+    """
+    single = not isinstance(x, (list, tuple))
+    xs = [x] if single else list(x)
+    for v in xs:
+        _check_grad_variable(v, create_graph)
+    if not isinstance(y, NumType):
+        raise GradientError(
+            f"nm.grad needs a NumType output, got {type(y).__name__}",
+            hint="Compute y from x with numlib operations",
+        )
+    if y.shape != ():
+        raise GradientError(
+            "nm.grad needs a scalar output",
+            shape=y.shape,
+            hint="The gradient is defined for a scalar y. Sum it first: nm.grad(nm.sum(y), x)",
+        )
+    if create_graph:
+        _check_autograd_for_create_graph()
+
+    grads = _grad_impl(y, xs, None, create_graph)
+    return grads[0] if single else grads
+
+
+def _check_grad_variable(v, create_graph):
+    """nm.grad の変数 v が微分できるものかを調べる"""
+    if not isinstance(v, NumType):
+        raise GradientError(
+            f"nm.grad needs NumType variables, got {type(v).__name__}",
+            hint="Create the variable with numlib, e.g. nm.vector(data, requires_grad=True)",
+        )
+    if isinstance(v, (Integer, Boolean)):
+        raise GradientError(
+            f"{type(v).__name__} is not differentiable",
+            hint="Use a real variable, e.g. nm.real(x) or x.astype(float)",
+        )
+    if not v.requires_grad:
+        raise GradientError(
+            f"The variable ({type(v).__name__}) does not require gradients",
+            hint="Create the variable with requires_grad=True",
+        )
+    if create_graph and v._data.dtype.kind == "c":
+        raise GradientError(
+            "Higher-order gradient is not supported for complex numbers",
+            hint="Use create_graph=False (first-order gradients of complex numbers work as before)",
+        )
+
+
+def _grad_impl(y, xs, seed, create_graph):
+    """
+    y の xs についての勾配のリストを返す。seed は y の勾配（None なら 1）
+
+    逆伝播の閉包はすべて .grad に足し込む作りなので、関係するノードの .grad を
+    退避して None にしてから逆伝播し、変数の .grad を読んだあとで元に戻す。
+    """
+    if not y.requires_grad:
+        if y._backward is _backward_built_under_off:
+            raise GradientError(
+                "y has no computation graph", hint=_no_graph_hint(y)
+            )
+        # y は x に依存しない（定数）ので、微分は 0
+        return [zeros_like(v) for v in xs]
+
+    topo = _topological_order(y)
+    if create_graph:
+        _check_create_graph(topo)  # 解放済みのグラフも調べる
+    else:
+        _check_graph_not_freed(topo)
+    if seed is None:
+        seed = ones_like(y)
+
+    saved = [(node, node.grad) for node in topo]
+    saved += [(v, v.grad) for v in xs]
+    for node, _ in saved:
+        node.grad = None
+    try:
+        _backprop(y, seed, topo, create_graph)
+        out = []
+        for v in xs:
+            g = v.grad
+            if g is None:
+                # v は y の計算に使われていない
+                g = zeros_like(v)
+            else:
+                tv, tg = type(v), type(g)
+                if tg is not tv and tv in _ARRAY_KINDS and tg in _ARRAY_KINDS:
+                    g = _construct_or_cast(tv, g) if create_graph else tv(g._data)
+                if not create_graph:
+                    g = g.detach()
+            out.append(g)
+    finally:
+        for node, g in reversed(saved):
+            node.grad = g
+    return out
+
+
+# ==============================
 # Export All Public APIs
 # ==============================
 
@@ -6684,6 +7317,7 @@ __all__ = [
     # ==================== Gradient Control ====================
     "autograd",
     "make_op",
+    "grad",
     # ==================== GPU Control ====================
     "cuda",
     # ==================== Type ====================
