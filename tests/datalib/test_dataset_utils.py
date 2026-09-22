@@ -98,7 +98,7 @@ def test_csvdataset():
         # Test 2: Dataset indexing
         x, y = dataset[0]
         assert x.shape == (3,), f"Features should be 3-dimensional, got {x.shape}"
-        assert int(y) == 0, f"First label should be 0, got {y}"
+        assert int(y[0]) == 0, f"First label should be 0, got {y}"
         print("  ✅ CSVDataset indexing")
 
         # Test 3: Data values

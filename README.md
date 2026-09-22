@@ -1,8 +1,8 @@
 # Lemon
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![NumPy](https://img.shields.io/badge/NumPy-1.20%2B-orange.svg)](https://numpy.org/)
+[![NumPy](https://img.shields.io/badge/NumPy-2.5%2B-orange.svg)](https://numpy.org/)
 
 数値計算/テンソル/自動微分/ニューラルネットワークライブラリ
 
@@ -14,10 +14,15 @@ GPU対応、ONNX対応
 pip install -e .
 ```
 
+開発用（pytest, ruff）:
+```bash
+pip install -e . --group dev
+```
+
 ## 依存パッケージ
 
 ### 必須
-- `numpy>=1.20.0`
+- `numpy>=2.5.0`
 
 ### オプション
 

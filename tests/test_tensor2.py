@@ -183,7 +183,7 @@ class TestMatrixDecompositions(unittest.TestCase):
         u_np, s_np, vh_np = np.linalg.svd(m._data)
 
         # Reconstruct matrix from SVD
-        s_diag = np.zeros_like(m._data)
+        s_diag = np.zeros_like(m._data, dtype=float)
         s_diag[: min(m.shape), : min(m.shape)] = np.diag(s_np[: min(m.shape)])
         reconstructed = u_np @ s_diag @ vh_np
 
