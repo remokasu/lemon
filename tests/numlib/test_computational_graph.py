@@ -566,3 +566,27 @@ class TestBackwardCompatibility:
         assert float(x.grad._data) == 3.0
         assert float(y.grad._data) == 2.0
         assert float(z.grad._data) == 1.0
+
+
+class TestRetainGraphRepeatedBackward:
+    """backward(retain_graph=True) を繰り返しても中間ノードの grad が混ざらない"""
+
+    def test_second_backward_accumulates_exactly_once_more(self):
+        x = nm.Real(2.0, requires_grad=True)
+        a = x * x
+        y = a * 1.0
+        y.backward(retain_graph=True)
+        assert float(x.grad) == pytest.approx(4.0)
+        y.backward(retain_graph=True)
+        # 葉の勾配は累積する: 4 + 4
+        assert float(x.grad) == pytest.approx(8.0)
+
+    def test_repeated_backward_through_intermediate_nodes(self):
+        x = nm.Real(1.5, requires_grad=True)
+        a = x * x
+        b = nm.sin(a)
+        y = b * a
+        dy = 2 * 1.5 * (np.cos(1.5**2) * 1.5**2 + np.sin(1.5**2))
+        for n in range(1, 4):
+            y.backward(retain_graph=True)
+            assert float(x.grad) == pytest.approx(n * dy)

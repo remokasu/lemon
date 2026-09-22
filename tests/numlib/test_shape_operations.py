@@ -338,3 +338,86 @@ class TestShapeEdgeCases:
         assert float(m[0, 1]._data) == 2
         assert float(m[0, 2]._data) == 3
         assert float(m[1, 0]._data) == 4
+
+
+class TestCopyAstypePreserveKind:
+    """copy() / astype() がスカラー型の kind / signed を失わない"""
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda: nm.uint8(200),
+            lambda: nm.int16(-3),
+            lambda: nm.real32(1.5),
+            lambda: nm.real16(1.5),
+            lambda: nm.cmplx64(1.0, 2.0),
+            lambda: nm.boolean(True),
+            lambda: nm.tensor(np.array([1.0, 2.0], dtype=np.float32)),
+        ],
+    )
+    def test_copy_keeps_kind_signed_dtype_and_value(self, make):
+        x = make()
+        c = x.copy()
+        assert type(c) is type(x)
+        assert c.dtype == x.dtype
+        np.testing.assert_array_equal(c._data, x._data)
+        for slot in ("kind", "signed"):
+            if hasattr(x, slot):
+                assert getattr(c, slot) == getattr(x, slot)
+
+    def test_real_astype_float16(self):
+        r = nm.real32(1.5).astype(np.float16)
+        assert r.dtype == np.float16
+        assert r.kind == 16
+
+    def test_integer_astype_uint8(self):
+        i = nm.int64(200).astype(np.uint8)
+        assert i.dtype == np.uint8
+        assert (i.kind, i.signed) == (8, False)
+
+    def test_complex_astype_complex64(self):
+        c = nm.cmplx128(1.0, 2.0).astype(np.complex64)
+        assert c.dtype == np.complex64
+        assert c.kind == 64
+
+
+class TestAstypeAcrossCategoryRaises:
+    """スカラー型の astype は同じ種類の中だけ。種類をまたぐと値や型が黙って変わるのでエラー"""
+
+    @pytest.mark.parametrize(
+        "make, dtype, hint",
+        [
+            (lambda: nm.real(1.5), np.int32, "nm.int32(x)"),
+            (lambda: nm.real(1.5), np.complex128, "nm.cmplx128(x)"),
+            (lambda: nm.real(1.5), np.bool_, "nm.boolean(x)"),
+            (lambda: nm.int32(3), np.float32, "nm.real32(x)"),
+            (lambda: nm.cmplx128(1.0, 2.0), np.float64, "nm.real64(x.real)"),
+            (lambda: nm.cmplx128(1.0, 2.0), np.int32, "nm.int32(x.real)"),
+            (lambda: nm.boolean(True), np.int64, "nm.int64(x)"),
+        ],
+    )
+    def test_cross_category_astype_raises_with_hint(self, make, dtype, hint):
+        x = make()
+        with pytest.raises(nm.CastError) as e:
+            x.astype(dtype)
+        assert hint in str(e.value)
+        # following the hint must actually work
+        converted = eval(hint, {"nm": nm, "x": x})
+        assert converted.dtype == np.dtype(dtype)
+
+    @pytest.mark.parametrize(
+        "make, dtype",
+        [
+            (lambda: nm.real(1.5), np.float32),
+            (lambda: nm.int32(3), np.uint8),
+            (lambda: nm.cmplx128(1.0, 2.0), np.complex64),
+            (lambda: nm.boolean(True), np.bool_),
+        ],
+    )
+    def test_same_category_astype_is_allowed(self, make, dtype):
+        assert make().astype(dtype).dtype == np.dtype(dtype)
+
+    def test_tensor_astype_across_category_is_allowed(self):
+        t = nm.tensor([1.5, 2.5]).astype(np.int32)
+        assert type(t) is nm.Tensor
+        assert t.dtype == np.int32

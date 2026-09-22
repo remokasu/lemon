@@ -378,7 +378,9 @@ autograd = AutogradNamespace()
 # ==============================
 
 
-def _make_binary_op(forward_fn, grad_x_fn, grad_y_fn, save_data=True, kind="map", name="operation"):
+def _make_binary_op(
+    forward_fn, grad_x_fn, grad_y_fn, save_data=True, kind="map", name="operation"
+):
     """
     二項演算のファクトリ関数
 
@@ -613,10 +615,14 @@ def make_op(forward, backward):
         xs = tuple(
             None
             if a is None
-            else (a if isinstance(a, NumType) else _auto_convert(a, requires_grad=False))
+            else (
+                a if isinstance(a, NumType) else _auto_convert(a, requires_grad=False)
+            )
             for a in inputs
         )
-        result_data, ctx = forward(*(None if a is None else a._data for a in xs), **params)
+        result_data, ctx = forward(
+            *(None if a is None else a._data for a in xs), **params
+        )
         result = _create_result(
             result_data, math=_is_math(*(a for a in xs if a is not None))
         )
@@ -813,8 +819,9 @@ arcsin = _make_unary_op(
 
 arccos = _make_unary_op(
     forward_fn=lambda xp, x: xp.arccos(x),
-    grad_fn=lambda g, x, r, xp: -g
-    / xp.sqrt(1 - x**2),  # d arccos(x)/dx = -1/sqrt(1-x²)
+    grad_fn=lambda g, x, r, xp: (
+        -g / xp.sqrt(1 - x**2)
+    ),  # d arccos(x)/dx = -1/sqrt(1-x²)
     save_input=True,
     save_output=False,
 )
@@ -1089,9 +1096,41 @@ def _is_np_complex(value: Any) -> bool:
 class CastError(TypeError):
     """Exception raised when type casting is not allowed"""
 
-    def __init__(self, from_type, to_type):
+    def __init__(self, from_type, to_type, hint=None):
         self.message = f"Cannot cast `{from_type}` to `{to_type}`"
+        if hint:
+            self.message += f"\n\n  Hint: {hint}\n"
         super().__init__(self.message)
+
+
+def _check_scalar_astype(x, dtype):
+    """Raise CastError when a scalar type is cast to another category of dtype"""
+    categories = {Boolean: "b", Integer: "iu", Real: "f", Complex: "c"}
+    allowed = categories.get(type(x))
+    dtype = np.dtype(dtype)
+    if allowed is None or dtype.kind in allowed:
+        return
+    bits = dtype.itemsize * 8
+    factory = {
+        "b": "boolean",
+        "i": f"int{bits}",
+        "u": f"uint{bits}",
+        "f": f"real{bits}",
+        "c": f"cmplx{bits}",
+    }.get(dtype.kind)
+    hint = (
+        f"{type(x).__name__}.astype() only changes precision within the same kind"
+        f" of number."
+    )
+    if factory and isinstance(x, Complex):
+        # A complex number has no single real value; make the user pick one
+        hint += (
+            " A complex number has no single real value: choose x.real, x.imag"
+            f" or nm.abs(x), e.g. nm.{factory}(x.real)."
+        )
+    elif factory:
+        hint += f" To convert, use nm.{factory}(x)."
+    raise CastError(type(x).__name__, dtype.name, hint=hint)
 
 
 class NumlibError(Exception):
@@ -1264,6 +1303,12 @@ class NumType:
                 stack.pop()
                 topo.append(v)
 
+        # 中間ノードの勾配は今回の逆伝播のぶんだけにする（retain_graph で
+        # 繰り返したとき、前回の値に足し込まれないように）。葉の勾配は累積する
+        for node in topo:
+            if node._prev:
+                node.grad = None
+
         # 勾配の初期化
         if gradient is None:
             if self.shape != ():
@@ -1313,6 +1358,45 @@ class NumType:
 
     def cleargrad(self):
         return self.zero_grad()
+
+    def detach(self):
+        """
+        Return a new object detached from the computational graph.
+
+        The result has the same type (``Vector``, ``Matrix``, ``Real`` ...),
+        the same ``kind`` / ``signed`` and the same value as ``self``, but
+        ``requires_grad=False`` and no graph history, so ``backward()`` stops
+        there. Only this path is cut; other paths from ``self`` still carry
+        gradients.
+
+        Returns
+        -------
+        NumType
+            Object of ``type(self)`` sharing the underlying array with ``self``.
+
+        Notes
+        -----
+        The array is shared, not copied. In-place operations (``+=``,
+        ``__setitem__`` ...) on either object are visible through the other.
+        Use ``x.detach().copy()`` for an independent copy.
+
+        Examples
+        --------
+        >>> y = x * x.detach()             # dy/dx = x, not 2x
+        >>> y = x + (round_op(x) - x).detach()  # straight-through estimator
+        """
+        cls = type(self)
+        out = object.__new__(cls)
+        # Subclass slots (Integer.kind/signed, Real.kind, ...) are copied as is,
+        # bypassing __init__ so that the dtype is never re-derived.
+        for klass in cls.__mro__[:-1]:
+            if klass is NumType:
+                break
+            for slot in klass.__dict__.get("__slots__", ()):
+                if hasattr(self, slot):
+                    setattr(out, slot, getattr(self, slot))
+        NumType.__init__(out, self._data, requires_grad=False, name=self.name)
+        return out
 
     def _convert_data(self, data: Any) -> ArrayType:
         """Convert input to appropriate array type - Optimized"""
@@ -1901,14 +1985,49 @@ class Tensor(NumType):
         result = xp.squeeze(self._data, axis=axis)
         return _create_result(result, math=_is_math(self))
 
+    def _kind_kwargs(self, dtype):
+        """
+        kind / signed that Integer / Real / Complex need to keep ``dtype``.
+
+        ``dtype`` must be of the same category as ``self`` (``copy`` passes
+        its own dtype, ``astype`` checks it with ``_check_scalar_astype``).
+        """
+        kind = dtype.itemsize * 8
+        if isinstance(self, Integer):
+            return {"kind": kind, "signed": dtype.kind == "i"}
+        if isinstance(self, (Real, Complex)):
+            return {"kind": kind}
+        return {}
+
     def copy(self, order="C"):
         """Copy (NumPy compatible)"""
-        return type(self)(self._data.copy(), requires_grad=self.requires_grad)
+        return type(self)(
+            self._data.copy(),
+            requires_grad=self.requires_grad,
+            **self._kind_kwargs(self._data.dtype),
+        )
 
     def astype(self, dtype, order="K", casting="unsafe", subok=True, copy=True):
-        """Cast to dtype (NumPy compatible)"""
+        """
+        Cast to dtype (NumPy compatible)
+
+        Scalar types (Integer / Real / Complex / Boolean) only change precision
+        within their own category. Casting across categories would silently
+        change the value (1.5 -> 1, 1+2j -> 1) or ignore ``dtype``, so it raises
+        ``CastError``; use a factory such as ``nm.int32(x)`` instead.
+
+        Raises
+        ------
+        CastError
+            If ``self`` is a scalar type and ``dtype`` belongs to another category.
+        """
+        _check_scalar_astype(self, dtype)
         result = self._data.astype(dtype, copy=copy)
-        return type(self)(result, requires_grad=self.requires_grad)
+        return type(self)(
+            result,
+            requires_grad=self.requires_grad,
+            **self._kind_kwargs(result.dtype),
+        )
 
     # ==============================
     # Reduction methods
@@ -1946,7 +2065,11 @@ class Tensor(NumType):
         result = self._data.all(axis=axis, keepdims=keepdims)
         if isinstance(result, (bool, np.bool_)):
             return bool(result)
-        return _create_result(result, math=_is_math(self)) if result.ndim > 0 else bool(result)
+        return (
+            _create_result(result, math=_is_math(self))
+            if result.ndim > 0
+            else bool(result)
+        )
 
     def any(self, axis=None, keepdims=False):
         """Logical OR reduction"""
@@ -1954,7 +2077,11 @@ class Tensor(NumType):
         result = self._data.any(axis=axis, keepdims=keepdims)
         if isinstance(result, (bool, np.bool_)):
             return bool(result)
-        return _create_result(result, math=_is_math(self)) if result.ndim > 0 else bool(result)
+        return (
+            _create_result(result, math=_is_math(self))
+            if result.ndim > 0
+            else bool(result)
+        )
 
     def argmax(self, axis=None, out=None, **kwargs):
         """Argmax (NumPy compatible)"""
@@ -2838,20 +2965,20 @@ class Real(Scalar):
 
         xp = cp if _cuda_enabled and cp else np
 
-        # 既にndarrayなら型チェックをスキップ
-        if isinstance(data, (np.ndarray, (cp.ndarray if cp else type(None)))):
-            # 既に配列
-            if kind == 64 and data.dtype == xp.float64:
-                # 最適パス: 型変換不要
-                pass
-            else:
-                dtype_map = {16: xp.float16, 32: xp.float32, 64: xp.float64}
-                if kind in dtype_map:
-                    data = data.astype(dtype_map[kind])
+        if isinstance(data, (np.ndarray, (cp.ndarray if cp else type(None)))) and (
+            kind == 64 and data.dtype == xp.float64
+        ):
+            # 最適パス: 型変換不要
+            pass
         else:
+            # kind と中身の dtype が必ず一致するよう、配列でも検証して変換する
             dtype_map = {16: xp.float16, 32: xp.float32, 64: xp.float64}
+            if hasattr(xp, "float128"):
+                dtype_map[128] = xp.float128
             if kind not in dtype_map:
-                raise ValueError(f"Real kind must be 16, 32, 64, got {kind}")
+                raise ValueError(
+                    f"Real kind must be 16, 32, 64 (or 128 if available), got {kind}"
+                )
             data = xp.asarray(data, dtype=dtype_map[kind])
 
         self.kind = kind
@@ -3156,7 +3283,6 @@ def _is_math(*xs) -> bool:
     return True
 
 
-
 def _is_scalar_operand(x) -> bool:
     """スカラー（0次元）の値か"""
     return isinstance(x, NumType) and x._data.ndim == 0
@@ -3251,6 +3377,7 @@ def _literal_in_space_of(literal, other):
     ):
         return _create_result(literal._data, requires_grad=False, math=True)
     return literal
+
 
 def _math_reduce_args(x, axis, keepdims):
     """
@@ -3571,7 +3698,7 @@ def matmul(x, y):
         batch_x = x.shape[:-2] if x.ndim >= 2 else ()
         batch_y = y.shape[:-2] if y.ndim >= 2 else ()
         short, long_ = sorted((batch_x, batch_y), key=len)
-        if long_[len(long_) - len(short):] != short:
+        if long_[len(long_) - len(short) :] != short:
             raise DimensionError(
                 "matrix multiplication",
                 x.shape,
@@ -3746,6 +3873,7 @@ def matmul(x, y):
                     y.grad = grad_y
                 else:
                     y.grad._data = y.grad._data + grad_y._data
+
     result._backward = _backward
     return result
 
@@ -4217,7 +4345,9 @@ def transpose(x, axes=None):
 def _has_int_array_index(key) -> bool:
     """key に整数の配列（同じ要素を重複して選べるインデックス）が含まれるなら True"""
     for e in key if isinstance(key, tuple) else (key,):
-        if isinstance(e, (list, np.ndarray)) or (cp is not None and isinstance(e, cp.ndarray)):
+        if isinstance(e, (list, np.ndarray)) or (
+            cp is not None and isinstance(e, cp.ndarray)
+        ):
             kind = e.dtype.kind if hasattr(e, "dtype") else np.asarray(e).dtype.kind
             if kind in ("i", "u"):
                 return True
@@ -4607,7 +4737,6 @@ def mod(x, y):
 # ==============================
 # Factory Functions - Tensors
 # ==============================
-
 
 
 def _construct_or_cast(cls, data, **kwargs):
@@ -6217,7 +6346,10 @@ def split(x, indices_or_sections, axis=0):
     split_arrays = xp.split(x._data, indices_or_sections, axis=axis)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        return [_create_result(arr, requires_grad=False, math=_is_math(x)) for arr in split_arrays]
+        return [
+            _create_result(arr, requires_grad=False, math=_is_math(x))
+            for arr in split_arrays
+        ]
 
     # 各分割に対してTensorを作成
     results = []

@@ -63,3 +63,39 @@ class TestReal:
 
         x64 = nm.real64(3.14)
         assert x64.kind == 64
+
+
+class TestRealKindMatchesData:
+    """Real の kind と中身の dtype が必ず一致する"""
+
+    needs_float128 = pytest.mark.skipif(
+        not hasattr(np, "float128"), reason="float128 is not available"
+    )
+
+    @needs_float128
+    @pytest.mark.parametrize(
+        "data",
+        [1.5, np.array(1.5), np.array(1.5, dtype=np.float32)],
+        ids=["python-float", "ndarray-f64", "ndarray-f32"],
+    )
+    def test_real128_converts_to_float128(self, data):
+        x = nm.real128(data)
+        assert x.kind == 128
+        assert x.dtype == np.float128
+
+    @needs_float128
+    def test_real128_from_real(self):
+        x = nm.real128(nm.real(1.5))
+        assert (x.kind, x.dtype) == (128, np.float128)
+
+    @pytest.mark.parametrize("kind", [16, 32, 64])
+    def test_ndarray_input_is_cast_to_kind(self, kind):
+        x = nm.Real(np.array(1.5, dtype=np.float64), kind=kind)
+        assert x.dtype == np.dtype(f"float{kind}")
+
+    @pytest.mark.parametrize(
+        "data", [1.5, np.array(1.5)], ids=["python-float", "ndarray"]
+    )
+    def test_invalid_kind_raises(self, data):
+        with pytest.raises(ValueError, match="Real kind must be"):
+            nm.Real(data, kind=8)
