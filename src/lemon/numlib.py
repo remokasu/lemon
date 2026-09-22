@@ -1536,8 +1536,11 @@ def ones_like(x):
         Tensor filled with ones, matching the shape and type of x
     """
     xp = get_array_module(x._data)
-    # 定数なので勾配は追跡しない
-    return type(x)(xp.ones_like(x._data), requires_grad=False)
+    data = xp.ones_like(x._data)
+    # 定数なので勾配は追跡しない。スカラーは kind を中身の dtype に合わせる
+    if isinstance(x, Scalar):
+        return _auto_scalar(data, requires_grad=False)
+    return type(x)(data, requires_grad=False)
 
 
 def zeros_like(x):
@@ -1555,8 +1558,11 @@ def zeros_like(x):
         Tensor filled with zeros, matching the shape and type of x
     """
     xp = get_array_module(x._data)
-    # 定数なので勾配は追跡しない
-    return type(x)(xp.zeros_like(x._data), requires_grad=False)
+    data = xp.zeros_like(x._data)
+    # 定数なので勾配は追跡しない。スカラーは kind を中身の dtype に合わせる
+    if isinstance(x, Scalar):
+        return _auto_scalar(data, requires_grad=False)
+    return type(x)(data, requires_grad=False)
 
 
 class NumType:
@@ -2732,7 +2738,13 @@ class Scalar(Tensor):
     def _promote_types(self, other: Any) -> Tuple["Scalar", "Scalar"]:
         """型プロモーション（requires_grad保持版）"""
         if not isinstance(other, Scalar):
-            other = _auto_scalar(other)
+            if type(other) in _PY_NUMBER_TYPES:
+                # リテラルは相手（self）の精度で読む
+                other = _literal_with_precision_of(
+                    other, _auto_scalar(other), self
+                )
+            else:
+                other = _auto_scalar(other)
 
         if type(self) is type(other):
             return self, other
@@ -2742,16 +2754,10 @@ class Scalar(Tensor):
         else:
             target_type = type(other)
 
-        self_conv = (
-            self
-            if type(self) is target_type
-            else target_type(self._data, requires_grad=self.requires_grad)
-        )
-        other_conv = (
-            other
-            if type(other) is target_type
-            else target_type(other._data, requires_grad=other.requires_grad)
-        )
+        # 変換先の精度は、両方を合わせた dtype に従う（float32 が黙って float64 にならない）
+        target_dtype = np.result_type(self._data.dtype, other._data.dtype)
+        self_conv = _as_scalar_type(target_type, self, target_dtype)
+        other_conv = _as_scalar_type(target_type, other, target_dtype)
 
         return self_conv, other_conv
 
@@ -2808,10 +2814,10 @@ class Scalar(Tensor):
         result = div(self_conv, other_conv)
         if isinstance(self_conv, Complex) or isinstance(other_conv, Complex):
             if not isinstance(result, Complex):
-                result = Complex(result._data)
+                result = Complex(result._data, kind=result._data.dtype.itemsize * 8)
         else:
             if not isinstance(result, Real):
-                result = Real(result._data)
+                result = Real(result._data, kind=result._data.dtype.itemsize * 8)
         return result
 
     def __rtruediv__(self, other):
@@ -2822,10 +2828,10 @@ class Scalar(Tensor):
         result = div(other_conv, self_conv)
         if isinstance(self_conv, Complex) or isinstance(other_conv, Complex):
             if not isinstance(result, Complex):
-                result = Complex(result._data)
+                result = Complex(result._data, kind=result._data.dtype.itemsize * 8)
         else:
             if not isinstance(result, Real):
-                result = Real(result._data)
+                result = Real(result._data, kind=result._data.dtype.itemsize * 8)
         return result
 
     def __floordiv__(self, other):
@@ -3345,12 +3351,18 @@ class Complex(Scalar):
     @property
     def real(self):
         """Real part"""
-        return Real(self._data.real, requires_grad=self.requires_grad)
+        data = self._data.real
+        return Real(
+            data, kind=data.dtype.itemsize * 8, requires_grad=self.requires_grad
+        )
 
     @property
     def imag(self):
         """Imaginary part"""
-        return Real(self._data.imag, requires_grad=self.requires_grad)
+        data = self._data.imag
+        return Real(
+            data, kind=data.dtype.itemsize * 8, requires_grad=self.requires_grad
+        )
 
     def __repr__(self):
         if self.kind == 128:
@@ -3405,14 +3417,18 @@ def _auto_scalar(data: Any, requires_grad: bool = False) -> Scalar:
     # NumPy/CuPy配列の場合（最も一般的）
     if isinstance(data, _ARRAY_TYPES):
         # dtype.kindで直接分岐（最速）
-        kind = data.dtype.kind
+        dtype = data.dtype
+        kind = dtype.kind
+        # 値の精度は変えない: Scalar の kind は中身の dtype から決める
+        # （float32 の和が float64 になるような、黙った昇格を起こさない）
+        bits = dtype.itemsize * 8
 
         if kind == "f":  # float（最も頻繁）
-            return Real(data, requires_grad=requires_grad)
+            return Real(data, kind=bits, requires_grad=requires_grad)
         elif kind in ("i", "u"):  # int, uint
-            return Integer(data, requires_grad=False)
+            return Integer(data, kind=bits, signed=kind == "i", requires_grad=False)
         elif kind == "c":  # complex
-            return Complex(data, requires_grad=requires_grad)
+            return Complex(data, kind=bits, requires_grad=requires_grad)
         elif kind == "b":  # bool
             return Boolean(data, requires_grad=False)
 
@@ -3428,13 +3444,18 @@ def _auto_scalar(data: Any, requires_grad: bool = False) -> Scalar:
     elif data_type is bool:
         return Boolean(data, requires_grad=False)
 
-    # NumPyスカラー型（低頻度）
+    # NumPyスカラー型（低頻度）。配列と同じく、中身の dtype から kind を決める
     if _is_np_float(data):
-        return Real(data, requires_grad=requires_grad)
+        return Real(data, kind=data.dtype.itemsize * 8, requires_grad=requires_grad)
     elif _is_np_int(data):
-        return Integer(data, requires_grad=False)
+        return Integer(
+            data,
+            kind=data.dtype.itemsize * 8,
+            signed=data.dtype.kind == "i",
+            requires_grad=False,
+        )
     elif _is_np_complex(data):
-        return Complex(data, requires_grad=requires_grad)
+        return Complex(data, kind=data.dtype.itemsize * 8, requires_grad=requires_grad)
     elif _is_np_bool(data):
         return Boolean(data, requires_grad=False)
 
@@ -3648,21 +3669,64 @@ def _check_elementwise(kind, name, x, y):
         )
 
 
+_PY_NUMBER_TYPES = (bool, int, float, complex)
+
+
+def _as_scalar_type(target_type, x, dtype):
+    """
+    x を target_type のスカラーにする。精度（kind）は dtype に合わせる
+
+    呼ぶのは `Scalar._promote_types` だけで、target_type は優先度の高いほうの型。
+    Boolean は最低優先度なので、ここに Boolean が来るのは両方 Boolean のときだけだが、
+    その場合は呼び出し側が早く返している。
+    """
+    if type(x) is target_type and x._data.dtype == dtype:
+        return x
+    bits = dtype.itemsize * 8
+    if target_type is Integer:
+        return Integer(
+            x._data, kind=bits, signed=dtype.kind != "u", requires_grad=False
+        )
+    return target_type(x._data, kind=bits, requires_grad=x.requires_grad)
+
+
+def _literal_with_precision_of(value, node, other):
+    """
+    Python の数のリテラルを、相手の精度に合わせた定数として読み直す
+
+    リテラルの `2` は実数であって「float64 という表現」ではないので、相手が float32 の元なら
+    float32 の定数として読む。種類（bool < int < float < complex）はリテラルと相手の大きいほう、
+    精度は相手に合わせる（種類が上がるときは既定の 64 ビット）。dtype の決め方は
+    `np.result_type` に任せる（NumPy の「弱いスカラー」と同じ規則）。
+
+    ndarray や list のリテラルは「形を持つ定数」なので、今までどおり dtype を変えない。
+    """
+    if type(value) not in _PY_NUMBER_TYPES:
+        return node
+    target = np.result_type(other._data.dtype, value)
+    if target == node._data.dtype:
+        return node
+    xp = get_array_module(other._data)
+    return _auto_scalar(xp.asarray(value, dtype=target), requires_grad=False)
+
+
 def _convert_operands(x, y):
     """
     二項演算の入力を NumType にする。NumType でない入力（リテラル）は定数として変換し、
-    形がまったく同じなら相手と同じ空間の元として読む
+    形がまったく同じなら相手と同じ空間の元として読む。Python の数のリテラルは、
+    相手と同じ精度（dtype）で読む
     """
     x_literal = not isinstance(x, NumType)
     y_literal = not isinstance(y, NumType)
+    x_value, y_value = x, y
     if x_literal:
         x = _auto_convert(x, requires_grad=False)
     if y_literal:
         y = _auto_convert(y, requires_grad=False)
     if x_literal and not y_literal:
-        x = _literal_in_space_of(x, y)
+        x = _literal_in_space_of(_literal_with_precision_of(x_value, x, y), y)
     elif y_literal and not x_literal:
-        y = _literal_in_space_of(y, x)
+        y = _literal_in_space_of(_literal_with_precision_of(y_value, y, x), x)
     return x, y
 
 
@@ -4134,6 +4198,14 @@ def matmul(x, y):
 
     if not (autograd.is_enabled() and (x_req or y_req)):
         result.requires_grad = False
+        if x_req or y_req or (
+            (
+                x._backward is _backward_built_under_off
+                or y._backward is _backward_built_under_off
+            )
+            and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
@@ -4319,6 +4391,14 @@ def dot(x, y):
 
     if not (autograd.is_enabled() and (x_req or y_req)):
         result.requires_grad = False
+        if x_req or y_req or (
+            (
+                x._backward is _backward_built_under_off
+                or y._backward is _backward_built_under_off
+            )
+            and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
@@ -4845,6 +4925,10 @@ def get_item(x, key):
 
     if not (autograd.is_enabled() and x.requires_grad):
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
@@ -5998,8 +6082,13 @@ def concatenate(tensors, axis=0) -> Tensor:
 
     # Check if any input requires grad
     requires_grads = [t.requires_grad for t in tensors]
-    if not (autograd.is_enabled() and any(requires_grads)):
+    if not (autograd.is_enabled() and builtins.any(requires_grads)):
         result.requires_grad = False
+        if builtins.any(requires_grads) or (
+            not autograd.is_enabled()
+            and builtins.any(t._backward is _backward_built_under_off for t in tensors)
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
@@ -6060,8 +6149,13 @@ def stack(tensors, axis=0) -> Tensor:
 
     # Check if any input requires grad
     requires_grads = [t.requires_grad for t in tensors]
-    if not (autograd.is_enabled() and any(requires_grads)):
+    if not (autograd.is_enabled() and builtins.any(requires_grads)):
         result.requires_grad = False
+        if builtins.any(requires_grads) or (
+            not autograd.is_enabled()
+            and builtins.any(t._backward is _backward_built_under_off for t in tensors)
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result.requires_grad = True
@@ -6404,6 +6498,10 @@ def clip(x, min_val=None, max_val=None):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -6467,6 +6565,10 @@ def expand_dims(x, axis):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -6515,6 +6617,10 @@ def squeeze(x, axis=None):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -6577,6 +6683,10 @@ def var(x, axis=None, keepdims=False, ddof=0):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -6687,6 +6797,10 @@ def logsumexp(x, axis=None, keepdims=False):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))
@@ -6760,6 +6874,14 @@ def where(condition, x, y):
     if not (autograd.is_enabled() and (x_req or y_req)):
         result = _create_result(result_data, math=_is_math(x, y))
         result.requires_grad = False
+        if x_req or y_req or (
+            (
+                x._backward is _backward_built_under_off
+                or y._backward is _backward_built_under_off
+            )
+            and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x, y))
@@ -6831,10 +6953,16 @@ def split(x, indices_or_sections, axis=0):
     split_arrays = xp.split(x._data, indices_or_sections, axis=axis)
 
     if not (autograd.is_enabled() and x.requires_grad):
-        return [
+        results = [
             _create_result(arr, requires_grad=False, math=_is_math(x))
             for arr in split_arrays
         ]
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            for result in results:
+                result._backward = _backward_built_under_off
+        return results
 
     # 各分割に対してTensorを作成
     results = []
@@ -6916,6 +7044,10 @@ def tile(x, reps):
     if not (autograd.is_enabled() and x.requires_grad):
         result = _create_result(result_data, math=_is_math(x))
         result.requires_grad = False
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
         return result
 
     result = _create_result(result_data, math=_is_math(x))

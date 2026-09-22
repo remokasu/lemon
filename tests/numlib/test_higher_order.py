@@ -819,3 +819,48 @@ def test_higher_order_float32_vector_on_gpu():
     g2_cpu = second_order(data)
     assert g2_cpu.dtype == np.float32
     np.testing.assert_allclose(g2_gpu, g2_cpu.data, rtol=1e-4, atol=1e-5)
+
+
+# ------------------------------------------------------------------
+# autograd.off の中で作った値は、どの演算でも番兵を持つ（黙って 0 を返さない）
+# ------------------------------------------------------------------
+
+OFF_OPS = {
+    "add": lambda x, m: x + x,
+    "mul": lambda x, m: x * x,
+    "pow": lambda x, m: x**2,
+    "sum": lambda x, m: nm.sum(x),
+    "mean": lambda x, m: nm.mean(x),
+    "reshape": lambda x, m: nm.reshape(x, (2, 1)),
+    "transpose": lambda x, m: nm.transpose(m),
+    "type_cast": lambda x, m: nm.vector(x),
+    "broadcast_to": lambda x, m: nm.broadcast_to(x, (3, 2)),
+    "sum_to": lambda x, m: nm.sum_to(m, (1, 2)),
+    "matmul": lambda x, m: m @ m,
+    "dot": lambda x, m: nm.dot(nm.vector(x), nm.vector(x)),
+    "get_item": lambda x, m: x[0],
+    "concatenate": lambda x, m: nm.concatenate([x, x]),
+    "stack": lambda x, m: nm.stack([x, x]),
+    "clip": lambda x, m: nm.clip(x, 0.0, 1.0),
+    "expand_dims": lambda x, m: nm.expand_dims(x, 0),
+    "squeeze": lambda x, m: nm.squeeze(nm.tensor(x.data.reshape(1, 2), requires_grad=True)),
+    "var": lambda x, m: nm.var(x),
+    "logsumexp": lambda x, m: nm.logsumexp(x),
+    "where": lambda x, m: nm.where(nm.tensor([True, False], requires_grad=False), x, x),
+    "split": lambda x, m: nm.split(x, 2)[0],
+    "tile": lambda x, m: nm.tile(x, 2),
+    "make_op": lambda x, m: _square_op()(x),
+}
+
+
+@pytest.mark.parametrize("name", sorted(OFF_OPS))
+def test_value_built_under_autograd_off_is_detected(name):
+    """autograd.off の中で作った値を微分しようとしたら、黙って 0 にせずエラーにする"""
+    x = nm.tensor([1.0, 2.0], requires_grad=True)
+    m = nm.matrix([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    with nm.autograd.off:
+        y = OFF_OPS[name](x, m)
+    assert y.requires_grad is False
+    with pytest.raises(nm.GradientError, match="autograd.off") as e:
+        y.backward()
+    assert "detach" in str(e.value)
