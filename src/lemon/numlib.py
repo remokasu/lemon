@@ -232,8 +232,73 @@ def get_array_module(x: ArrayType) -> Any:
     -------
     module
         numpy or cupy module
+
+    Notes
+    -----
+    どの装置にあるかは配列そのものが決める（`nm.cuda` の設定は、新しく作る配列を
+    どこに置くかだけを決める）。そのため GPU を有効にしていなくても、cupy の配列には
+    cupy を返す。
     """
-    return cp if (_cuda_enabled and cp and isinstance(x, cp.ndarray)) else np
+    return cp if (cp is not None and isinstance(x, cp.ndarray)) else np
+
+
+def _index_device_name(k) -> str:
+    """インデックスに使う配列がどの装置にあるか（配列でなければ None）"""
+    if cp is not None and isinstance(k, cp.ndarray):
+        return "GPU"
+    if isinstance(k, np.ndarray):
+        return "CPU"
+    return None
+
+
+def _check_index_device(x, key) -> None:
+    """インデックスに使う配列の装置が、値の装置と食い違っていればエラーにする"""
+    keys = key if isinstance(key, tuple) else (key,)
+    x_device = _device_name(x)
+    for k in keys:
+        k_device = _index_device_name(k)
+        if k_device is not None and k_device != x_device:
+            raise TypeMismatchError(
+                "indexing",
+                f"{_operand_name(x)} on {x_device}",
+                f"index array on {k_device}",
+                hint=(
+                    "The value and the index must be on the same device. Move one "
+                    "of them explicitly, e.g. nm.to_gpu(x) or nm.to_cpu(x)"
+                ),
+            )
+
+
+def _device_name(x) -> str:
+    """値がどの装置にあるか（"CPU" / "GPU"）"""
+    return "GPU" if (cp is not None and isinstance(x._data, cp.ndarray)) else "CPU"
+
+
+def _check_device_match(name, *xs) -> None:
+    """
+    入力の装置が食い違っていれば TypeMismatchError を出す
+
+    順伝播の計算が TypeError で失敗したときだけ呼ぶ（成功する経路には判定を入れない）。
+    """
+    tensors = [x for x in xs if isinstance(x, NumType)]
+    if not tensors:
+        return
+    left = tensors[0]
+    left_device = _device_name(left)
+    # 実際に装置が食い違っている値を出す（where や concatenate のように 3 つ以上取る
+    # 演算で、先頭 2 つがたまたま同じ装置のことがある）
+    right = next((t for t in tensors[1:] if _device_name(t) != left_device), None)
+    if right is None:
+        return
+    raise TypeMismatchError(
+        name,
+        f"{_operand_name(left)} on {left_device}",
+        f"{_operand_name(right)} on {_device_name(right)}",
+        hint=(
+            "Values on CPU and GPU cannot be combined. Move one of them explicitly, "
+            "e.g. nm.to_gpu(x) or nm.to_cpu(x)"
+        ),
+    )
 
 
 def _array_module_for(data: Any) -> Any:
@@ -663,7 +728,12 @@ def _make_binary_op(
         _check_elementwise(kind, name, x, y)
 
         # 計算
-        result_data = forward_fn(x._data, y._data)
+        try:
+            result_data = forward_fn(x._data, y._data)
+        except TypeError:
+            # 装置（CPU / GPU）が食い違っているなら、分かるエラーにする
+            _check_device_match(name, x, y)
+            raise
         math = _is_math(x, y)
 
         # 勾配追跡の早期判定
@@ -1671,6 +1741,24 @@ class NumType:
     def cleargrad(self):
         return self.zero_grad()
 
+    def _like(self, data, requires_grad=False):
+        """
+        自分と同じ型・同じ属性（kind / signed / name）で、中身だけ data にした値を作る
+
+        サブクラスのスロット（Integer.kind / signed、Real.kind ...）はそのまま写し、
+        __init__ を通さないので dtype が derive され直さない。
+        """
+        cls = type(self)
+        out = object.__new__(cls)
+        for klass in cls.__mro__[:-1]:
+            if klass is NumType:
+                break
+            for slot in klass.__dict__.get("__slots__", ()):
+                if hasattr(self, slot):
+                    setattr(out, slot, getattr(self, slot))
+        NumType.__init__(out, data, requires_grad=requires_grad, name=self.name)
+        return out
+
     def detach(self):
         """
         Return a new object detached from the computational graph.
@@ -1697,18 +1785,9 @@ class NumType:
         >>> y = x * x.detach()             # dy/dx = x, not 2x
         >>> y = x + (round_op(x) - x).detach()  # straight-through estimator
         """
-        cls = type(self)
-        out = object.__new__(cls)
         # Subclass slots (Integer.kind/signed, Real.kind, ...) are copied as is,
         # bypassing __init__ so that the dtype is never re-derived.
-        for klass in cls.__mro__[:-1]:
-            if klass is NumType:
-                break
-            for slot in klass.__dict__.get("__slots__", ()):
-                if hasattr(self, slot):
-                    setattr(out, slot, getattr(self, slot))
-        NumType.__init__(out, self._data, requires_grad=False, name=self.name)
-        return out
+        return self._like(self._data)
 
     def _convert_data(self, data: Any) -> ArrayType:
         """Convert input to appropriate array type - Optimized"""
@@ -2230,27 +2309,51 @@ class Tensor(NumType):
 
     def __eq__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data == other_data
+        try:
+            return self._data == other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     def __ne__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data != other_data
+        try:
+            return self._data != other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     def __lt__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data < other_data
+        try:
+            return self._data < other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     def __le__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data <= other_data
+        try:
+            return self._data <= other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     def __gt__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data > other_data
+        try:
+            return self._data > other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     def __ge__(self, other):
         other_data = other._data if isinstance(other, NumType) else other
-        return self._data >= other_data
+        try:
+            return self._data >= other_data
+        except TypeError:
+            _check_device_match("comparison", self, other)
+            raise
 
     # ==============================
     # Indexing
@@ -3710,10 +3813,11 @@ def _literal_with_precision_of(value, node, other):
     """
     if type(value) not in _PY_NUMBER_TYPES:
         return node
-    target = np.result_type(other._data.dtype, value)
-    if target == node._data.dtype:
-        return node
     xp = get_array_module(other._data)
+    target = np.result_type(other._data.dtype, value)
+    # 精度も装置も相手に合っていれば、そのまま使う
+    if target == node._data.dtype and (cp is None or xp is get_array_module(node._data)):
+        return node
     return _auto_scalar(xp.asarray(value, dtype=target), requires_grad=False)
 
 
@@ -3959,7 +4063,11 @@ def pow(x, y):
             pass
 
     if not is_special_case:
-        result_data = xp.power(x._data, y._data)
+        try:
+            result_data = xp.power(x._data, y._data)
+        except TypeError:
+            _check_device_match("power", x, y)
+            raise
 
     # 勾配追跡
     x_req = x.requires_grad
@@ -4100,6 +4208,8 @@ def matmul(x, y):
         y = _auto_convert(y, requires_grad=False)
 
     xp = get_array_module(x._data)
+    if cp is not None:
+        _check_device_match("matrix multiplication", x, y)
 
     # 特別なケースの処理とエラーチェック
     if isinstance(x, Vector) and isinstance(y, Vector):
@@ -4367,6 +4477,8 @@ def dot(x, y):
         y = _auto_convert(y, requires_grad=False)
 
     xp = get_array_module(x._data)
+    if cp is not None:
+        _check_device_match("dot", x, y)
 
     # Vectorの特別処理
     x_is_vector = isinstance(x, (Vector, RowVector))
@@ -4922,6 +5034,10 @@ def get_item(x, key):
 
     key = _math_key(x, key)
     x_data = x._data
+    if cp is not None:
+        # 配列のインデックスは、値と同じ装置のものだけ許す（cupy は host の配列を
+        # 黙って device へコピーしてしまうので、こちらで止める）
+        _check_index_device(x, key)
     result_data = x_data[key]
 
     if not isinstance(result_data, (np.ndarray, (cp.ndarray if cp else type(None)))):
@@ -6084,7 +6200,11 @@ def concatenate(tensors, axis=0) -> Tensor:
 
     arrays = [t._data for t in tensors]
     xp = get_array_module(arrays[0])
-    result_data = xp.concatenate(arrays, axis=axis)
+    try:
+        result_data = xp.concatenate(arrays, axis=axis)
+    except TypeError:
+        _check_device_match("concatenate", *tensors)
+        raise
     result = Tensor(result_data)
 
     # Check if any input requires grad
@@ -6151,7 +6271,11 @@ def stack(tensors, axis=0) -> Tensor:
 
     arrays = [t._data for t in tensors]
     xp = get_array_module(arrays[0])
-    result_data = xp.stack(arrays, axis=axis)
+    try:
+        result_data = xp.stack(arrays, axis=axis)
+    except TypeError:
+        _check_device_match("stack", *tensors)
+        raise
     result = Tensor(result_data)
 
     # Check if any input requires grad
@@ -6873,7 +6997,11 @@ def where(condition, x, y):
     else:
         cond_data = xp.asarray(condition)
 
-    result_data = xp.where(cond_data, x._data, y._data)
+    try:
+        result_data = xp.where(cond_data, x._data, y._data)
+    except TypeError:
+        _check_device_match("where", condition, x, y)
+        raise
 
     x_req = x.requires_grad
     y_req = y.requires_grad
@@ -7301,6 +7429,128 @@ def col2im(col, input_shape, kernel_h, kernel_w, stride=1, padding=0, dilation=1
 
 
 # ==============================
+# 装置の移動（Device Transfer）
+# ==============================
+
+
+def _to_device(x, to_gpu_device):
+    """to_gpu / to_cpu の本体。装置を移した新しい値を返す（微分できる恒等写像）"""
+    if not isinstance(x, NumType):
+        x = _auto_convert(x, requires_grad=False)
+
+    on_gpu = cp is not None and isinstance(x._data, cp.ndarray)
+    if on_gpu == to_gpu_device:
+        return x  # すでにその装置にある
+
+    if to_gpu_device:
+        if cp is None:
+            raise RuntimeError(
+                "CuPy is not installed, so values cannot be moved to the GPU."
+                " Install cupy (e.g. pip install cupy-cuda12x) to use nm.to_gpu()"
+            )
+        data = cp.asarray(x._data)
+    else:
+        data = as_numpy(x._data)
+
+    result = x._like(data)
+
+    if not (autograd.is_enabled() and x.requires_grad):
+        if x.requires_grad or (
+            x._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
+        return result
+
+    result.requires_grad = True
+    result._prev = (x,)
+
+    def _backward(create_graph=False):
+        if result.grad is None:
+            return
+        if create_graph:
+            # 装置を戻すのも恒等写像。グラフはつながったまま
+            _accumulate_graph(x, _to_device(result.grad, not to_gpu_device))
+            return
+        g = (
+            as_numpy(result.grad._data)
+            if to_gpu_device
+            else cp.asarray(result.grad._data)
+        )
+        if x.grad is None:
+            x.grad = x._like(g)
+        else:
+            x.grad._data = x.grad._data + g
+
+    result._backward = _backward
+    return result
+
+
+def to_gpu(x):
+    """
+    Move a value to the GPU (CuPy).
+
+    Moving between devices is an identity map, so gradients flow through it and
+    are moved back to the device of ``x``.
+
+    Parameters
+    ----------
+    x : NumType or array_like
+        Input value. A value that is already on the GPU is returned as is.
+
+    Returns
+    -------
+    NumType
+        Value of ``type(x)`` holding a CuPy array.
+
+    Raises
+    ------
+    RuntimeError
+        If CuPy is not installed.
+
+    Notes
+    -----
+    numlib never moves arrays between devices on its own: a new array (from a
+    list or from ``nm.randn``) is created on the current device (``nm.cuda``),
+    and an array that is passed in stays where it is. Use this function to move
+    it explicitly. Combining a CPU value and a GPU value in one operation raises
+    ``TypeMismatchError``.
+
+    Examples
+    --------
+    >>> x = nm.tensor(np.ones((2, 2)))   # CPU
+    >>> with nm.cuda.gpu:
+    ...     y = nm.tensor([[1.0, 2.0], [3.0, 4.0]])   # GPU
+    ...     z = nm.to_gpu(x) * y
+    """
+    return _to_device(x, True)
+
+
+def to_cpu(x):
+    """
+    Move a value to the CPU (NumPy).
+
+    Moving between devices is an identity map, so gradients flow through it and
+    are moved back to the device of ``x``.
+
+    Parameters
+    ----------
+    x : NumType or array_like
+        Input value. A value that is already on the CPU is returned as is.
+
+    Returns
+    -------
+    NumType
+        Value of ``type(x)`` holding a NumPy array.
+
+    See Also
+    --------
+    to_gpu : Move a value to the GPU.
+    as_numpy : Get the raw NumPy array out of a value.
+    """
+    return _to_device(x, False)
+
+
+# ==============================
 # 高階微分（Higher-Order Derivatives）
 # ==============================
 
@@ -7608,6 +7858,8 @@ __all__ = [
     # ==================== Helper Functions ====================
     "get_array_module",
     "as_numpy",
+    "to_gpu",
+    "to_cpu",
     "as_cupy",
     # ==================== im2col / col2im ====================
     "im2col",
