@@ -1,4 +1,4 @@
-"""Additional coverage for device placement rules (memo/numlib_device_rule.md).
+"""Additional coverage for device placement rules.
 
 `test_device.py` で担保済みの基本（型/値/dtype の保持、`to_gpu`/`to_cpu` の恒等写像、
 CUDA が無い環境でのエラー、代表的な演算での装置食い違いエラー）とは重複しない範囲を補強する:

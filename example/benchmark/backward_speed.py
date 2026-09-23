@@ -4,10 +4,10 @@ Backward Speed Benchmark / 逆伝播の速さのベンチマーク
 
 Measures one training step (zero_grad -> forward -> loss -> backward -> step)
 of two MLPs, to check that first-order backward (create_graph=False) has not
-become slower (SPEC-0001 AC-9: within +-5%).
+become slower (within +-5%).
 
 2 つの MLP の学習 1 ステップ（zero_grad → 順伝播 → 損失 → backward → step）を測る。
-1 階の逆伝播（create_graph=False）が遅くなっていないかを確かめる（SPEC-0001 AC-9: ±5% 以内）。
+1 階の逆伝播（create_graph=False）が遅くなっていないかを確かめる（±5% 以内）。
 
 - mnist-mlp: Linear(784, 128) -> Relu -> Linear(128, 10), batch 64（代表）
 - small-mlp: Linear(32, 32) -> Tanh -> Linear(32, 32) -> Tanh -> Linear(32, 10), batch 8

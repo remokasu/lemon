@@ -1,4 +1,4 @@
-"""Tests for higher-order derivatives (SPEC-0001 stage 1)
+"""Tests for higher-order derivatives (stage 1)
 
 backward(create_graph=True), nm.grad, and the higher-order gradient formulas of
 the factory operations, pow, sum / mean / reshape / transpose / broadcast_to /

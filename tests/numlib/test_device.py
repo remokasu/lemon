@@ -1,4 +1,4 @@
-"""Tests for device placement rules (memo/numlib_device_rule.md)
+"""Tests for device placement rules
 
 規約: 新しく配列を作るときは今の装置に置く。すでにある配列は動かさない。
 装置を移すときは `nm.to_gpu` / `nm.to_cpu` で明示する。

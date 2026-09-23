@@ -1,4 +1,4 @@
-"""Tests for higher-order derivatives (SPEC-0001 stage 2)
+"""Tests for higher-order derivatives (stage 2)
 
 matmul / dot / get_item / where / clip / expand_dims / squeeze / var / logsumexp /
 concatenate / stack / split / tile と、nm.jacobian / nm.hessian。
@@ -398,7 +398,7 @@ def test_where_on_vector_keeps_vector_type_in_second_order():
 
 def test_hessian_does_not_symmetrize_the_result():
     """
-    ADR-0001 の決定（5-A）: H は対称にそろえない。
+    H は対称にそろえない。
 
     nm.hessian(f, x) は nm.jacobian(lambda u: nm.grad(f(u), u, create_graph=True), x)
     の生の値そのもの（(H + Hᵀ)/2 のような後処理をしない）ことを、同じ式を自分で
