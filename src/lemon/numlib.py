@@ -4592,6 +4592,23 @@ def dot(x, y):
 # ==============================
 
 
+def _broadcast_like(v, x):
+    """
+    v を x と同じ空間の元に広げる（高階用の勾配の式で使う）
+
+    0 次元はスカラー倍で、それ以外は broadcast_to で広げる。数学の型は x に合わせる。
+    """
+    if v.shape == x.shape:
+        return v
+    if v._data.ndim == 0:
+        return v * ones_like(x)
+    out = broadcast_to(v, x.shape)
+    tx, to = type(x), type(out)
+    if to is not tx and tx in _ARRAY_KINDS and to in _ARRAY_KINDS:
+        out = _construct_or_cast(tx, out)
+    return out
+
+
 def _unreduce_graph(g, original_shape, axis, keepdims):
     """高階用: 縮約で消えた軸を大きさ 1 の軸として戻す（そのあと broadcast_to で広げる）"""
     if axis is None or keepdims:
@@ -5019,6 +5036,51 @@ def _scatter_add(xp, target, key, values):
         cupyx.scatter_add(target, key, values)
 
 
+def _index_add(g, key, shape):
+    """
+    形 shape の零の元の key の位置に g を足した値（`get_item` の随伴）
+
+    取り出し `x[key]` は選択行列 P をかける線形写像なので、その随伴は Pᵀ にあたるこの演算。
+    2 つは互いに随伴なので、高階の勾配の式でも組にして使える。同じ要素を複数回選ぶ
+    インデックスでは、上書きせずに足し合わせる。
+    """
+    xp = get_array_module(g._data)
+    out_data = xp.zeros(shape, dtype=g._data.dtype)
+    if _has_int_array_index(key):
+        _scatter_add(xp, out_data, key, g._data)
+    else:
+        out_data[key] = g._data
+
+    result = _create_result(out_data, math=_is_math(g))
+
+    if not (autograd.is_enabled() and g.requires_grad):
+        result.requires_grad = False
+        if g.requires_grad or (
+            g._backward is _backward_built_under_off and not autograd.is_enabled()
+        ):
+            result._backward = _backward_built_under_off
+        return result
+
+    result.requires_grad = True
+    result._prev = (g,)
+
+    def _backward(create_graph=False):
+        if result.grad is None:
+            return
+        if create_graph:
+            _accumulate_graph(g, get_item(result.grad, key))
+            return
+        grad_g_data = result.grad._data[key]
+        grad_g = _create_result(grad_g_data)
+        if g.grad is None:
+            g.grad = grad_g
+        else:
+            g.grad._data = g.grad._data + grad_g._data
+
+    result._backward = _backward
+    return result
+
+
 def get_item(x, key):
     """インデックス（自動微分対応・超高速版）"""
     if not isinstance(x, NumType):
@@ -5061,8 +5123,12 @@ def get_item(x, key):
     x_shape = x.shape
     result_grad_shape = result.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            _accumulate_graph(x, _index_add(result.grad, key, x_shape))
             return
 
         xp = get_array_module(x_data)
@@ -6224,16 +6290,30 @@ def concatenate(tensors, axis=0) -> Tensor:
     # Save info for backward
     axis_normalized = axis if axis >= 0 else len(result_data.shape) + axis
 
-    def _backward():
-        grad_data = result.grad._data
-        split_indices = []
+    def _concat_split_indices():
+        """つなぎ目の位置（最後の要素は要らない）"""
+        indices = []
         offset = 0
         for t in tensors:
             offset += t._data.shape[axis_normalized]
-            split_indices.append(offset)
-        split_indices = split_indices[:-1]  # Remove last index
+            indices.append(offset)
+        return indices[:-1]
 
-        grad_splits = xp.split(grad_data, split_indices, axis=axis_normalized)
+    def _backward(create_graph=False):
+        if result.grad is None:
+            return
+
+        if create_graph:
+            parts = split(result.grad, _concat_split_indices(), axis=axis_normalized)
+            for t, part in zip(tensors, parts):
+                if t.requires_grad:
+                    _accumulate_graph(t, part)
+            return
+
+        grad_data = result.grad._data
+        grad_splits = xp.split(
+            grad_data, _concat_split_indices(), axis=axis_normalized
+        )
 
         for t, grad_split in zip(tensors, grad_splits):
             if t.requires_grad:
@@ -6295,7 +6375,17 @@ def stack(tensors, axis=0) -> Tensor:
     # Save info for backward
     axis_normalized = axis if axis >= 0 else len(result_data.shape) + axis + 1
 
-    def _backward():
+    def _backward(create_graph=False):
+        if result.grad is None:
+            return
+
+        if create_graph:
+            parts = split(result.grad, len(tensors), axis=axis_normalized)
+            for t, part in zip(tensors, parts):
+                if t.requires_grad:
+                    _accumulate_graph(t, squeeze(part, axis=axis_normalized))
+            return
+
         grad_data = result.grad._data
         # unstack along the stacked axis
         grad_unstacked = xp.split(grad_data, len(tensors), axis=axis_normalized)
@@ -6641,20 +6731,28 @@ def clip(x, min_val=None, max_val=None):
 
     x_data = x._data
 
-    def _backward():
-        if result.grad is None:
-            return
-
-        grad_data = result.grad._data
-
-        # クリップ範囲内の要素のみ勾配を通す
+    def _clip_mask():
+        """クリップ範囲の中だけ勾配を通すマスク（1 階と高階で同じ決まり）"""
         mask = xp.ones_like(x_data)
         if min_val is not None:
             mask = mask * (x_data >= min_val)
         if max_val is not None:
             mask = mask * (x_data <= max_val)
+        return mask
 
-        grad_x_data = grad_data * mask
+    def _backward(create_graph=False):
+        if result.grad is None:
+            return
+
+        if create_graph:
+            g = result.grad
+            _accumulate_graph(x, g * _as_constant(_clip_mask(), g))
+            return
+
+        grad_data = result.grad._data
+
+        # クリップ範囲内の要素のみ勾配を通す
+        grad_x_data = grad_data * _clip_mask()
         grad_x = _create_result(grad_x_data)
 
         if x.grad is None:
@@ -6706,8 +6804,12 @@ def expand_dims(x, axis):
     result.requires_grad = True
     result._prev = (x,)
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            _accumulate_graph(x, squeeze(result.grad, axis))
             return
 
         grad_data = result.grad._data
@@ -6760,8 +6862,12 @@ def squeeze(x, axis=None):
 
     x_shape = x.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            _accumulate_graph(x, reshape(result.grad, x_shape))
             return
 
         grad_data = result.grad._data
@@ -6828,8 +6934,28 @@ def var(x, axis=None, keepdims=False, ddof=0):
     x_mean = xp.mean(x._data, axis=axis, keepdims=True)
     x_shape = x.shape
 
-    def _backward():
+    def _var_count():
+        """割る数 N（ddof を引いたもの）"""
+        n = (
+            x._data.size
+            if axis is None
+            else x._data.shape[axis]
+            if isinstance(axis, int)
+            else np.prod([x._data.shape[ax] for ax in axis])
+        )
+        return n - ddof
+
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            g = _unreduce_graph(result.grad, x.shape, axis, keepdims)
+            m = mean(x, axis=axis, keepdims=True) if axis is not None else mean(x)
+            centered = x - _broadcast_like(m, x)
+            _accumulate_graph(
+                x, (2.0 / _var_count()) * (centered * _broadcast_like(g, x))
+            )
             return
 
         grad_data = result.grad._data
@@ -6920,8 +7046,9 @@ def logsumexp(x, axis=None, keepdims=False):
     # exp -> sum -> log
     sum_exp = xp.sum(xp.exp(x_shifted), axis=axis, keepdims=keepdims)
 
-    if not keepdims and axis is not None:
-        x_max = xp.squeeze(x_max, axis=axis)
+    if not keepdims:
+        # 軸を指定しない全体の縮約はスカラー（nm.sum / nm.mean と同じ）
+        x_max = xp.squeeze(x_max, axis=axis) if axis is not None else x_max.reshape(())
 
     result_data = xp.log(sum_exp) + x_max
 
@@ -6938,8 +7065,16 @@ def logsumexp(x, axis=None, keepdims=False):
     result.requires_grad = True
     result._prev = (x,)
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            # logsumexp の勾配は softmax = exp(x - r)（r は出力のノード）
+            g = _unreduce_graph(result.grad, x.shape, axis, keepdims)
+            r_kept = _unreduce_graph(result, x.shape, axis, keepdims)
+            soft = exp(x - _broadcast_like(r_kept, x))
+            _accumulate_graph(x, _broadcast_like(g, x) * soft)
             return
 
         grad_data = result.grad._data
@@ -6948,11 +7083,14 @@ def logsumexp(x, axis=None, keepdims=False):
         if not keepdims and axis is not None:
             grad_data = xp.expand_dims(grad_data, axis=axis)
 
-        softmax_vals = xp.exp(
-            x._data - xp.expand_dims(result_data, axis=axis)
-            if axis is not None
+        # logsumexp の勾配は softmax = exp(x - r)。全体の縮約（axis=None）のときも
+        # r を引く（前は exp(r) を掛けていて、形も値も間違っていた）
+        r_expanded = (
+            xp.expand_dims(result_data, axis=axis)
+            if axis is not None and not keepdims
             else result_data
         )
+        softmax_vals = xp.exp(x._data - r_expanded)
         grad_x_data = grad_data * softmax_vals
         grad_x = _create_result(grad_x_data)
 
@@ -7029,8 +7167,17 @@ def where(condition, x, y):
     else:
         result._prev = (y,)
 
-    def _backward():
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            g = result.grad
+            zero = zeros_like(g)
+            if x_req:
+                _accumulate_graph(x, where(cond_data, g, zero))
+            if y_req:
+                _accumulate_graph(y, where(cond_data, zero, g))
             return
 
         grad_data = result.grad._data
@@ -7118,8 +7265,28 @@ def split(x, indices_or_sections, axis=0):
         split_infos.append(split_info)
 
         def make_backward(info):
-            def _backward():
+            def _backward(create_graph=False):
                 if results[info["index"]].grad is None:
+                    return
+
+                if create_graph:
+                    # 自分のぶんの勾配と、ほかは 0 をつなぐ（随伴は concatenate）
+                    parts = []
+                    for j in range(info["total_splits"]):
+                        if j == info["index"]:
+                            parts.append(results[j].grad)
+                        else:
+                            shape = list(info["shape"])
+                            shape[info["axis"]] = split_arrays[j].shape[info["axis"]]
+                            parts.append(
+                                _as_constant(
+                                    xp.zeros(tuple(shape), dtype=x._data.dtype),
+                                    results[info["index"]].grad,
+                                )
+                            )
+                    _accumulate_graph(
+                        x, concatenate(parts, axis=info["axis"])
+                    )
                     return
 
                 # 勾配を結合するためのリストを作成
@@ -7191,8 +7358,32 @@ def tile(x, reps):
 
     x_shape = x.shape
 
-    def _backward():
+    def _tile_padded():
+        """x の形と reps の長さをそろえた (形, 繰り返し回数) を返す"""
+        ndim_diff = len(reps) - len(x_shape)
+        padded_x_shape = (1,) * ndim_diff + x_shape if ndim_diff > 0 else x_shape
+        padded_reps = (1,) * (-ndim_diff) + reps if ndim_diff < 0 else reps
+        return ndim_diff, padded_x_shape, padded_reps
+
+    def _backward(create_graph=False):
         if result.grad is None:
+            return
+
+        if create_graph:
+            # 繰り返した軸を分けて足すのは、reshape と sum の組み合わせで書ける
+            ndim_diff, padded_x_shape, padded_reps = _tile_padded()
+            g = result.grad
+            for axis, (orig_size, rep_count) in enumerate(
+                zip(padded_x_shape, padded_reps)
+            ):
+                if rep_count > 1:
+                    new_shape = list(g.shape)
+                    new_shape[axis] = rep_count
+                    new_shape.insert(axis + 1, orig_size)
+                    g = sum(reshape(g, tuple(new_shape)), axis=axis)
+            if ndim_diff > 0:
+                g = reshape(g, x_shape)
+            _accumulate_graph(x, g)
             return
 
         grad_data = result.grad._data
