@@ -435,18 +435,10 @@ def _as_constant(data, like):
     )
 
 
-def _scalar_like(value, like):
-    """
-    数 value を、like と同じ dtype の 0 次元の定数にする
-
-    高階用の勾配の式に 2 や log(2) を直接書くと float64 の定数になり、float32 の勾配が
-    float64 に上がってしまう。それを避けるために使う。
-    """
-    xp = get_array_module(like._data)
-    data = xp.asarray(value, dtype=like.dtype)
-    if data.dtype.kind == "f":
-        return Real(data, kind=data.dtype.itemsize * 8, requires_grad=False)
-    return _create_result(data, requires_grad=False)
+# 高階用の勾配の式で使う定数。Python の float にしておくと、リテラルとして相手の精度で
+# 読まれる（NumPy のスカラーのままだと float32 の勾配を float64 に上げてしまう）
+_LN2 = float(np.log(2.0))
+_LN10 = float(np.log(10.0))
 
 
 def _spread(s, like):
@@ -1030,7 +1022,7 @@ abs = absolute
 sqrt = _make_unary_op(
     forward_fn=lambda xp, x: xp.sqrt(x),
     grad_fn=lambda g, x, r, xp: g / (2 * r),  # d sqrt(x)/dx = 1/(2*sqrt(x))
-    grad_graph=lambda g, x, r: g / (_scalar_like(2, r) * r),
+    grad_graph=lambda g, x, r: g / (2 * r),
     save_input=False,
     save_output=True,
 )
@@ -1075,7 +1067,7 @@ log1p = _make_unary_op(
 log2 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log2(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(2)),  # d log2(x)/dx = 1/(x*ln(2))
-    grad_graph=lambda g, x, r: g / (x * _scalar_like(np.log(2.0), x)),
+    grad_graph=lambda g, x, r: g / (x * _LN2),
     save_input=True,
     save_output=False,
 )
@@ -1083,7 +1075,7 @@ log2 = _make_unary_op(
 log10 = _make_unary_op(
     forward_fn=lambda xp, x: xp.log10(x),
     grad_fn=lambda g, x, r, xp: g / (x * xp.log(10)),  # d log10(x)/dx = 1/(x*ln(10))
-    grad_graph=lambda g, x, r: g / (x * _scalar_like(np.log(10.0), x)),
+    grad_graph=lambda g, x, r: g / (x * _LN10),
     save_input=True,
     save_output=False,
 )
@@ -1253,7 +1245,7 @@ minimum = _make_binary_op(
 square = _make_unary_op(
     forward_fn=lambda xp, x: x**2,
     grad_fn=lambda g, x, r, xp: g * 2 * x,  # d x²/dx = 2x
-    grad_graph=lambda g, x, r: g * (_scalar_like(2, x) * x),
+    grad_graph=lambda g, x, r: g * (2 * x),
     save_input=True,
     save_output=False,
 )
@@ -3906,7 +3898,7 @@ def pow(x, y):
                     _accumulate_graph(x, g)
                 else:
                     _accumulate_graph(
-                        x, g * (_scalar_like(y_value, x) * x ** (y_value - 1))
+                        x, g * (y_value * x ** (y_value - 1))
                     )
                 return
 
@@ -4603,7 +4595,7 @@ def mean(x, axis=None, keepdims=False):
     def _backward(create_graph=False):
         if create_graph:
             if result.grad is not None:
-                g = result.grad / _scalar_like(n, result.grad)
+                g = result.grad / n
                 g = _unreduce_graph(g, original_shape, axis, keepdims)
                 _accumulate_graph(x, broadcast_to(g, original_shape))
             return
