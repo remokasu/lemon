@@ -3,6 +3,12 @@ VGG16 で CIFAR-10 分類
 =======================
 
 VGG16 を使って CIFAR-10 データセットを分類する例。
+
+各畳み込みの後に BatchNorm を入れている（いわゆる VGG16-BN）。正規化のない深い
+プレーンな CNN は、ランダムな初期化から学習を始められない（損失が跳ねたあと
+ln(10) = 2.303 に張り付き、全クラスに同じ確率を出す状態で止まる）。VGG の論文でも
+深い構成は浅いモデルの重みで初期化しており、そのままでは学習できないとしている。
+BatchNorm を入れると、同じ学習率のまま学習できる。
 """
 
 import lemon as lm
@@ -21,7 +27,7 @@ VGG_CONFIGS = {
 }
 
 
-def make_vgg_layers(config, in_channels=3):
+def make_vgg_layers(config, in_channels=3, batch_norm=True):
     """VGGの特徴抽出レイヤーを作成"""
     layers = []
     channels = [64, 128, 256, 512, 512]
@@ -31,6 +37,8 @@ def make_vgg_layers(config, in_channels=3):
             layers.append(
                 lm.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
             )
+            if batch_norm:
+                layers.append(lm.BatchNorm2d(out_channels))
             layers.append(lm.Relu())
             in_channels = out_channels
         layers.append(lm.MaxPool2d(kernel_size=2, stride=2))
@@ -41,12 +49,16 @@ def make_vgg_layers(config, in_channels=3):
 class VGG(lm.Module):
     """VGGモデル"""
 
-    def __init__(self, config_name="vgg16", num_classes=10, in_channels=3):
+    def __init__(
+        self, config_name="vgg16", num_classes=10, in_channels=3, batch_norm=True
+    ):
         super().__init__()
         config = VGG_CONFIGS[config_name]
 
         # 特徴抽出層
-        self.features = lm.Sequential(*make_vgg_layers(config, in_channels))
+        self.features = lm.Sequential(
+            *make_vgg_layers(config, in_channels, batch_norm=batch_norm)
+        )
 
         # 分類層 (CIFAR-10用に簡略化)
         self.classifier = lm.Sequential(
@@ -69,6 +81,8 @@ train_dataset = lm.datasets.CIFAR10(root="./data", train=True, download=True)
 test_dataset = lm.datasets.CIFAR10(root="./data", train=False)
 
 # サンプル数を制限 (高速化のため)
+# 1000 枚しか使わず、データ拡張も正則化もしないので、訓練精度はテスト精度をかなり
+# 上回る（過学習）。動かして確かめるための設定で、精度を出すためのものではない
 train_set = lm.Subset(train_dataset, list(range(1000)))
 test_set = lm.Subset(test_dataset, list(range(200)))
 

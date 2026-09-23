@@ -122,6 +122,8 @@ train_dataset = lm.datasets.CIFAR10(root="./data", train=True, download=True)
 test_dataset = lm.datasets.CIFAR10(root="./data", train=False)
 
 # サンプル数を制限 (高速化のため)
+# 1000 枚しか使わず、データ拡張も正則化もしないので、訓練精度はテスト精度をかなり
+# 上回る（過学習）。動かして確かめるための設定で、精度を出すためのものではない
 train_set = lm.Subset(train_dataset, list(range(1000)))
 test_set = lm.Subset(test_dataset, list(range(200)))
 
