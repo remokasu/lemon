@@ -5,10 +5,11 @@ VGG16 で CIFAR-10 分類
 VGG16 を使って CIFAR-10 データセットを分類する例。
 
 各畳み込みの後に BatchNorm を入れている（いわゆる VGG16-BN）。正規化のない深い
-プレーンな CNN は、ランダムな初期化から学習を始められない（損失が跳ねたあと
-ln(10) = 2.303 に張り付き、全クラスに同じ確率を出す状態で止まる）。VGG の論文でも
-深い構成は浅いモデルの重みで初期化しており、そのままでは学習できないとしている。
-BatchNorm を入れると、同じ学習率のまま学習できる。
+プレーンな CNN は、この設定（ランダムな初期化、Adam lr=0.001）では学習を始められず、
+損失が跳ねたあと ln(10) = 2.303 に張り付いて、全クラスに同じ確率を出す状態で止まる。
+VGG の論文は、深い構成を浅いモデルの重みで層ごとに初期化して学習を安定させている。
+ここでは別のやり方として BatchNorm を使っている（論文の手法ではない）。
+`batch_norm=False` にすると、BatchNorm なしの原型の構成になる。
 """
 
 import lemon as lm
@@ -28,14 +29,21 @@ VGG_CONFIGS = {
 
 
 def make_vgg_layers(config, in_channels=3, batch_norm=True):
-    """VGGの特徴抽出レイヤーを作成"""
+    """VGGの特徴抽出レイヤーを作成（batch_norm=False で BatchNorm なしの原型構成）"""
     layers = []
     channels = [64, 128, 256, 512, 512]
 
     for num_convs, out_channels in zip(config, channels):
         for _ in range(num_convs):
+            # BatchNorm がチャンネルごとに平均を引くので、その前の bias は打ち消される
             layers.append(
-                lm.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+                lm.Conv2d(
+                    in_channels,
+                    out_channels,
+                    kernel_size=3,
+                    padding=1,
+                    bias=not batch_norm,
+                )
             )
             if batch_norm:
                 layers.append(lm.BatchNorm2d(out_channels))
