@@ -371,13 +371,12 @@ def test_create_graph_unsupported_raises():
     # 1 階は今までどおり
     np.testing.assert_allclose(nm.grad(y, x).data, 2 * x.data)
 
-    # まだ対応していない演算（段階②③）
+    # 段階②③まで対応したので、numlib の演算に未対応のものは残っていない
     A = nm.matrix([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
-    y = nm.sum(A @ A)
-    with pytest.raises(nm.GradientError, match="matmul") as e:
-        nm.grad(y, A, create_graph=True)
-    assert "Hint" in str(e.value)
-    assert A.grad is None
+    np.testing.assert_allclose(
+        nm.grad(nm.sum(A @ A), A, create_graph=True).data,
+        nm.grad(nm.sum(A @ A), A).data,
+    )
 
     # 複素数
     z = nm.cmplx(1.0, 2.0, requires_grad=True)
@@ -736,16 +735,17 @@ def test_backward_built_under_off_per_operation(name):
 
 
 def test_unsupported_op_error_leaves_all_variable_grads_untouched():
-    """対応済みの経路（a）と未対応の経路（A @ A）が同じ y に混ざっていても、両方の .grad が変わらない"""
+    """対応済みの経路（a）と未対応の経路（make_op）が同じ y に混ざっていても、両方の .grad が変わらない"""
+    square = _square_op()
     a = nm.tensor([1.0, 2.0], requires_grad=True)
-    A = nm.matrix([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    b = nm.tensor([3.0, 4.0], requires_grad=True)
     a.grad = nm.tensor([9.0, 9.0], requires_grad=False)
-    A.grad = nm.matrix([[9.0, 9.0], [9.0, 9.0]], requires_grad=False)
-    y = nm.sum(a * a) + nm.sum(A @ A)
-    with pytest.raises(nm.GradientError, match="matmul"):
+    b.grad = nm.tensor([9.0, 9.0], requires_grad=False)
+    y = nm.sum(a * a) + nm.sum(square(b))
+    with pytest.raises(nm.GradientError, match="make_op"):
         y.backward(create_graph=True)
     np.testing.assert_array_equal(a.grad.data, [9.0, 9.0])
-    np.testing.assert_array_equal(A.grad.data, [[9.0, 9.0], [9.0, 9.0]])
+    np.testing.assert_array_equal(b.grad.data, [9.0, 9.0])
 
 
 # ------------------------------------------------------------------

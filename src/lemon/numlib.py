@@ -4345,8 +4345,60 @@ def matmul(x, y):
     is_rowvec_mat = isinstance(x, RowVector) and isinstance(y, Matrix)
     is_mat_vec = isinstance(x, Matrix) and isinstance(y, Vector)
 
-    def _backward():
+    def _matmul_graph(grad):
+        """高階用: 行列積の随伴（∂L/∂X = G Yᵀ、∂L/∂Y = Xᵀ G）を numlib の演算で書く"""
+        if is_rowvec_vec:  # RowVector @ Vector -> スカラー
+            if x_req:
+                _accumulate_graph(x, grad * transpose(y))
+            if y_req:
+                _accumulate_graph(y, transpose(x) * grad)
+            return
+        if is_vec_rowvec or is_rowvec_mat or is_mat_vec:
+            if x_req:
+                _accumulate_graph(x, grad @ transpose(y))
+            if y_req:
+                _accumulate_graph(y, transpose(x) @ grad)
+            return
+
+        # 一般の場合（行列積・バッチ行列積・1次元を含む）
+        xd = reshape(x, (1,) + x_shape) if x._data.ndim == 1 else x
+        yd = reshape(y, y_shape + (1,)) if y._data.ndim == 1 else y
+        g = grad
+        if x._data.ndim == 1 and y._data.ndim == 1:
+            g = reshape(g, (1, 1))
+        elif x._data.ndim == 1:
+            g = expand_dims(g, -2)
+        elif y._data.ndim == 1:
+            g = expand_dims(g, -1)
+
+        def _swap_last_two(t):
+            n = t._data.ndim
+            axes = list(range(n))
+            axes[-1], axes[-2] = axes[-2], axes[-1]
+            return transpose(t, tuple(axes))
+
+        def _sum_batch(v, shape):
+            """バッチで共有していた先頭の軸を足し合わせる"""
+            extra = v._data.ndim - len(shape)
+            if extra > 0:
+                v = sum(v, axis=tuple(range(extra)))
+            return v
+
+        if x_req:
+            gx = _sum_batch(g @ _swap_last_two(yd), xd.shape)
+            _accumulate_graph(x, reshape(gx, x_shape))
+        if y_req:
+            gy = _sum_batch(_swap_last_two(xd) @ g, yd.shape)
+            _accumulate_graph(y, reshape(gy, y_shape))
+
+    def _backward(create_graph=False):
         grad = result.grad
+        if grad is None:
+            return
+
+        if create_graph:
+            _matmul_graph(grad)
+            return
 
         # RowVector @ Vector（内積）の特別処理
         if is_rowvec_vec:
@@ -4484,6 +4536,22 @@ def dot(x, y):
     x_is_vector = isinstance(x, (Vector, RowVector))
     y_is_vector = isinstance(y, (Vector, RowVector))
 
+    # 内積はベクトルどうしにだけ定義される。片方だけが Vector / RowVector で、
+    # 相手が 2 次元以上なら、行列積を使うべき組み合わせ（今までは順伝播だけ通って
+    # 逆伝播で落ちていた）
+    if x_is_vector != y_is_vector and (
+        (y._data.ndim >= 2) if x_is_vector else (x._data.ndim >= 2)
+    ):
+        raise TypeMismatchError(
+            "dot",
+            _operand_name(x),
+            _operand_name(y),
+            hint=(
+                "The inner product is defined for two vectors. For a vector and a "
+                "matrix use the matrix product, e.g. nm.transpose(v) @ A or A @ v"
+            ),
+        )
+
     # ベクトルどうし（Vector / RowVector / 1次元 Tensor）は内積なので、結果はいつもスカラー。
     # 外積が必要なら Vector @ RowVector を使う
     inner = (x_is_vector or x._data.ndim == 1) and (y_is_vector or y._data.ndim == 1)
@@ -4536,8 +4604,37 @@ def dot(x, y):
     x_shape = x.shape
     y_shape = y.shape
 
-    def _backward():
+    def _backward(create_graph=False):
         grad = result.grad
+        if grad is None:
+            return
+
+        if create_graph:
+            g = grad
+            if x_req:
+                if inner:
+                    gx = reshape(g * reshape(y, (-1,)), x_shape)
+                elif x_is_vector and not y_is_vector:
+                    gx = reshape(g * y, x_shape)
+                elif x._data.ndim == 1 and y._data.ndim == 1:
+                    gx = g * y
+                else:
+                    gx = g @ transpose(y)
+                _accumulate_graph(x, gx)
+            if y_req:
+                if inner:
+                    gy = reshape(g * reshape(x, (-1,)), y_shape)
+                elif y_is_vector and not x_is_vector:
+                    gy = reshape(
+                        transpose(x) @ g if x._data.ndim > 1 else g * x, y_shape
+                    )
+                elif x._data.ndim == 1 and y._data.ndim == 1:
+                    gy = g * x
+                else:
+                    gy = transpose(x) @ g
+                _accumulate_graph(y, gy)
+            return
+
         grad_data = grad._data
 
         if x_req:
@@ -5228,9 +5325,15 @@ def random_mask(x, p=0.5, training=True):
     # Save mask for backward
     mask_scaled = mask * scale
 
-    def _backward():
+    def _backward(create_graph=False):
         grad = result.grad
         if grad is None:
+            return
+        if create_graph:
+            # マスクは定数（どの要素を残したかは x に依らない）。チャンネルごとの
+            # マスクは形が違うので、明示的に広げてから掛ける
+            m = _as_constant(mask_scaled, grad)
+            _accumulate_graph(x, grad * _broadcast_like(m, grad))
             return
         grad_x_data = grad._data * mask_scaled
         grad_x = _create_result(grad_x_data)
@@ -5322,9 +5425,15 @@ def random_mask_channel(x, p=0.5, training=True):
     # Save mask for backward
     mask_scaled = mask * scale
 
-    def _backward():
+    def _backward(create_graph=False):
         grad = result.grad
         if grad is None:
+            return
+        if create_graph:
+            # マスクは定数（どの要素を残したかは x に依らない）。チャンネルごとの
+            # マスクは形が違うので、明示的に広げてから掛ける
+            m = _as_constant(mask_scaled, grad)
+            _accumulate_graph(x, grad * _broadcast_like(m, grad))
             return
         grad_x_data = grad._data * mask_scaled
         grad_x = _create_result(grad_x_data)
@@ -7817,6 +7926,133 @@ def grad(y, x, create_graph=False):
     return grads[0] if single else grads
 
 
+def _check_jacobian_variable(v, name):
+    """jacobian / hessian の x は、requires_grad=True の Vector（列ベクトル）だけ"""
+    if isinstance(v, RowVector):
+        raise TypeMismatchError(
+            name,
+            _operand_name(v),
+            "Vector",
+            hint="The variable must be a column vector. Use nm.vector(x.T)",
+        )
+    if not isinstance(v, Vector):
+        raise TypeMismatchError(
+            name,
+            _operand_name(v) if isinstance(v, NumType) else type(v).__name__,
+            "Vector",
+            hint="The variable must be a column vector, e.g. nm.vector(data, requires_grad=True)",
+        )
+
+
+def jacobian(f, x, create_graph=False):
+    """
+    ヤコビ行列 J（J_ij = ∂f_i/∂x_j）を返す
+
+    Parameters
+    ----------
+    f : callable(Vector) -> Vector
+        ℝⁿ → ℝᵐ の写像。戻り値は列ベクトル（m×1）
+    x : Vector
+        変数（``requires_grad=True`` の列ベクトル n×1）
+    create_graph : bool, optional
+        True なら結果も微分できる（グラフを残す）。False（デフォルト）なら定数
+
+    Returns
+    -------
+    Matrix
+        m×n のヤコビ行列
+
+    Raises
+    ------
+    TypeMismatchError
+        x が列ベクトルでない、または f(x) が列ベクトルでないとき
+    GradientError
+        x が ``requires_grad=True`` でない、微分できない型、グラフが無いとき
+
+    Notes
+    -----
+    i 行目は、種の勾配を eᵢ にした 1 回の逆伝播で求める（m 回逆伝播する）。
+
+    Examples
+    --------
+    >>> A = nm.matrix([[2.0, 1.0], [1.0, 3.0]])
+    >>> v = nm.vector([1.0, 2.0], requires_grad=True)
+    >>> nm.jacobian(lambda u: A @ u, v)   # = A
+    """
+    _check_jacobian_variable(x, "jacobian")
+    _check_grad_variable(x, create_graph)
+    if create_graph:
+        _check_autograd_for_create_graph()
+
+    y = f(x)
+    if not isinstance(y, Vector):
+        raise TypeMismatchError(
+            "jacobian",
+            _operand_name(y) if isinstance(y, NumType) else type(y).__name__,
+            "Vector",
+            hint="f(x) must be a column vector. Reshape it, e.g. nm.vector(y)",
+        )
+
+    xp = get_array_module(x._data)
+    m = y.shape[0]
+    n = x.shape[0]
+    rows = []
+    for i in range(m):
+        seed_data = xp.zeros(y.shape, dtype=y._data.dtype)
+        seed_data[i, 0] = 1
+        seed = Vector(seed_data, requires_grad=False)
+        row = _grad_impl(y, [x], seed, create_graph)[0]
+        rows.append(transpose(row))
+
+    if not rows:
+        return Matrix(xp.zeros((0, n), dtype=x._data.dtype), requires_grad=False)
+    if create_graph:
+        # 型の変換は微分できる恒等写像なので、グラフはつながったまま Matrix になる
+        return _construct_or_cast(Matrix, concatenate(rows, axis=0))
+    return Matrix(
+        xp.concatenate([r._data for r in rows], axis=0), requires_grad=False
+    )
+
+
+def hessian(f, x, create_graph=False):
+    """
+    ヘッセ行列 H（H_ij = ∂²f/∂xᵢ∂xⱼ）を返す
+
+    Parameters
+    ----------
+    f : callable(Vector) -> Real
+        ℝⁿ → ℝ の関数。戻り値はスカラー
+    x : Vector
+        変数（``requires_grad=True`` の列ベクトル n×1）
+    create_graph : bool, optional
+        True なら結果も微分できる（グラフを残す）
+
+    Returns
+    -------
+    Matrix
+        n×n のヘッセ行列。誤差の範囲で非対称になることがあるが、対称にはそろえない
+
+    Raises
+    ------
+    TypeMismatchError
+        x が列ベクトルでないとき
+    GradientError
+        f(x) がスカラーでない、x が ``requires_grad=True`` でないとき
+
+    Examples
+    --------
+    >>> A = nm.matrix([[2.0, 1.0], [1.0, 3.0]])
+    >>> f = lambda v: nm.dot(v, A @ v) * 0.5
+    >>> nm.hessian(f, nm.vector([1.0, 2.0], requires_grad=True))   # = (A + Aᵀ)/2
+    """
+    _check_jacobian_variable(x, "hessian")
+
+    def _grad_of_f(v):
+        return grad(f(v), v, create_graph=True)
+
+    return jacobian(_grad_of_f, x, create_graph)
+
+
 def _check_grad_variable(v, create_graph):
     """nm.grad の変数 v が微分できるものかを調べる"""
     if not isinstance(v, NumType):
@@ -7898,6 +8134,8 @@ __all__ = [
     "autograd",
     "make_op",
     "grad",
+    "jacobian",
+    "hessian",
     # ==================== GPU Control ====================
     "cuda",
     # ==================== Type ====================
